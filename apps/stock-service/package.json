@@ -1,0 +1,11 @@
+{
+  "name": "stock-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Stock Service providing gRPC endpoints for stock validation and reservation",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  }
+}

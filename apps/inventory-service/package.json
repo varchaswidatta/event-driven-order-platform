@@ -1,0 +1,11 @@
+{
+  "name": "inventory-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Inventory Service consuming Kafka order events and communicating via gRPC",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  }
+}

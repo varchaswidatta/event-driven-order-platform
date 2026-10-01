@@ -1,0 +1,106 @@
+# Database Architecture & Schemas
+
+## Database Ownership & Isolation
+
+The platform enforces a strict **Database-per-Service** pattern:
+
+- **Order Service owns `order_db`**: The Order Service has exclusive read and write ownership of `order_db`.
+- **No Cross-Service Database Access**: The Order Service never directly accesses or queries databases owned by other services (`inventory_db`, `stock_db`). All cross-service coordination will occur through asynchronous events and synchronous APIs in later phases.
+
+---
+
+## Order Database Schema (`order_db`)
+
+The schema for `order_db` is managed via raw SQL migrations located in `apps/order-service/src/db/migrations/`.
+
+### 1. `orders` Table
+
+Stores top-level order records, customer identifiers, lifecycle statuses, and monetary totals.
+
+```sql
+CREATE TABLE IF NOT EXISTS orders (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  customer_id UUID NOT NULL,
+  status VARCHAR(50) NOT NULL CHECK (
+    status IN ('PENDING', 'INVENTORY_PROCESSING', 'CONFIRMED', 'INVENTORY_FAILED')
+  ),
+  total_amount NUMERIC(12, 2) NOT NULL CHECK (total_amount >= 0),
+  currency VARCHAR(3) NOT NULL CHECK (length(currency) = 3),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_orders_customer_id ON orders(customer_id);
+```
+
+#### Key Constraints:
+
+- `status`: Enforces valid order states (`PENDING`, `INVENTORY_PROCESSING`, `CONFIRMED`, `INVENTORY_FAILED`).
+- `total_amount`: Constrained to non-negative values (`CHECK (total_amount >= 0)`).
+- `currency`: Enforces standard 3-character ISO currency codes.
+- `customer_id` index: Accelerates querying customer order history.
+
+### 2. `order_items` Table
+
+Stores line items associated with each order, tracking product IDs, quantities, and unit prices.
+
+```sql
+CREATE TABLE IF NOT EXISTS order_items (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  product_id UUID NOT NULL,
+  quantity INTEGER NOT NULL CHECK (quantity > 0),
+  unit_price NUMERIC(12, 2) NOT NULL CHECK (unit_price >= 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
+```
+
+#### Key Constraints:
+
+- `order_id`: Foreign key reference to `orders(id)` with `ON DELETE CASCADE`.
+- `quantity`: Must be a strictly positive integer (`CHECK (quantity > 0)`).
+- `unit_price`: Constrained to non-negative values (`CHECK (unit_price >= 0)`).
+- `order_id` index: Prevents full table scans when fetching order items for an order.
+
+---
+
+## Monetary Representation & Precision
+
+Monetary values in `order_db` use **`NUMERIC(12, 2)`**:
+
+- **Why not `FLOAT` / `DOUBLE PRECISION`**: IEEE-754 binary floating-point numbers cannot accurately represent base-10 fractions (e.g. `0.1 + 0.2 = 0.30000000000000004`), leading to silent rounding errors and financial reconciliation bugs.
+- **Node-Postgres Mapping**: The `pg` driver intentionally parses PostgreSQL `NUMERIC` values as strings to avoid loss of precision in JavaScript numbers.
+- **Application Boundary Handling**: The Order Service consumes and returns money as fixed-point decimal strings (e.g., `"19.99"`).
+- **Exact Calculation**: Monetary math (such as `sum(quantity * unit_price)`) is computed via integer minor units (cents) using `BigInt`, eliminating any floating-point drift.
+
+---
+
+## Transactional Integrity During Order Creation
+
+Order creation spans multiple database operations and is executed within a **single ACID transaction**:
+
+```text
+BEGIN;
+  INSERT INTO orders (...) VALUES (...) RETURNING id, ...;
+  INSERT INTO order_items (...) VALUES (...);
+  INSERT INTO order_items (...) VALUES (...);
+COMMIT;
+```
+
+### Guarantees:
+
+- **Atomicity**: An order is never created without its corresponding order items. If inserting any item fails, the entire transaction is rolled back via `ROLLBACK`.
+- **Client Management**: A dedicated PostgreSQL connection client is checked out from `pg.Pool`, used for all queries within the transaction, and safely released back to the pool in a `finally` block.
+
+---
+
+## Migration Strategy
+
+Database changes are managed via a lightweight, zero-dependency SQL migration runner (`apps/order-service/src/db/migrate.ts`):
+
+1. **Tracking Table**: Maintains a `schema_migrations` table recording each migration name and timestamp.
+2. **Deterministic Order**: Migration files in `src/db/migrations/` are sorted alphabetically/numerically (e.g., `001_create_orders.sql`).
+3. **Idempotent Execution**: Before applying each file, the runner checks `schema_migrations` to ensure no migration is applied twice.
+4. **Transactional Migrations**: Each migration runs within its own transaction (`BEGIN` ... `COMMIT`). If an error occurs, the transaction is rolled back immediately, leaving the database in a clean state.

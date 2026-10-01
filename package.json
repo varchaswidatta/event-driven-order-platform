@@ -1,0 +1,29 @@
+{
+  "name": "event-driven-order-fulfillment-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Event-Driven Order Fulfillment Platform built with TypeScript, Kafka, PostgreSQL, gRPC, and GraphQL",
+  "packageManager": "pnpm@12.8.1",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r --if-present run test",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "migrate:order": "pnpm --filter order-service run migrate"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.6.3",
+    "eslint": "10.11.0",
+    "eslint-config-prettier": "10.1.8",
+    "prettier": "3.9.9",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.71.0"
+  }
+}
