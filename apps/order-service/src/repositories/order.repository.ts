@@ -2,6 +2,11 @@ import { Pool } from 'pg';
 import { Order, OrderItem } from '../domain/order.js';
 import { OrderStatus } from '../domain/order-status.js';
 import { DatabaseOperationError } from '../errors/order.errors.js';
+import {
+  InsertOutboxEventInput,
+  IOutboxRepository,
+  OutboxRepository,
+} from './outbox.repository.js';
 
 export interface CreateOrderRepositoryInput {
   id?: string;
@@ -15,6 +20,7 @@ export interface CreateOrderRepositoryInput {
     quantity: number;
     unitPrice: string;
   }>;
+  outboxEvent?: InsertOutboxEventInput;
 }
 
 export interface IOrderRepository {
@@ -25,7 +31,14 @@ export interface IOrderRepository {
 }
 
 export class OrderRepository implements IOrderRepository {
-  constructor(private readonly pool: Pool) {}
+  private readonly outboxRepository: IOutboxRepository;
+
+  constructor(
+    private readonly pool: Pool,
+    outboxRepository?: IOutboxRepository,
+  ) {
+    this.outboxRepository = outboxRepository ?? new OutboxRepository(pool);
+  }
 
   /**
    * Creates an order and its associated order items in a single PostgreSQL transaction.
@@ -103,6 +116,35 @@ export class OrderRepository implements IOrderRepository {
           unitPrice: String(itemRow.unit_price),
           createdAt: itemRow.created_at,
         });
+      }
+
+      // Persist the outbox event within the same atomic transaction
+      if (data.outboxEvent) {
+        await this.outboxRepository.insertEvent(
+          {
+            ...data.outboxEvent,
+            aggregateId: data.outboxEvent.aggregateId || orderId,
+          },
+          client,
+        );
+      } else {
+        await this.outboxRepository.insertEvent(
+          {
+            aggregateType: 'Order',
+            aggregateId: orderId,
+            eventType: 'OrderCreated',
+            eventVersion: 1,
+            payload: {
+              orderId,
+              customerId: data.customerId,
+              items: data.items.map((it) => ({
+                productId: it.productId,
+                quantity: it.quantity,
+              })),
+            },
+          },
+          client,
+        );
       }
 
       await client.query('COMMIT');

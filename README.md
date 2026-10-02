@@ -148,13 +148,22 @@ From the repository root, you can execute commands across all packages using pnp
   - Custom `DateTime` and `Decimal` GraphQL scalars
   - Typed `createOrder` mutation, `order(id)` and `orders(customerId)` queries
   - End-to-end integration tests (Client → GraphQL Gateway → Order Service HTTP → PostgreSQL)
-- [ ] **Phase 3: Event-Driven Core & Transactional Outbox Pattern**
-  - Transactional Outbox table and event publishing
-  - Apache Kafka event infrastructure
-  - Inventory Service event consumer
-- [ ] **Phase 4: Stock Service & gRPC Integration**
+- [x] **Phase 3: Transactional Outbox Pattern** (Complete)
+  - `outbox_events` table and partial index `idx_outbox_events_unpublished` (`002_create_outbox_events.sql`)
+  - Single ACID PostgreSQL transaction: `orders` + `order_items` + `outbox_events` (`OrderCreated`)
+  - Atomic rollback guarantee (verified with real PostgreSQL integration tests)
+  - Reusable application `EventEnvelope` and `OrderCreated` event payload
+  - Safe monetary boundary (inventory event payload strictly omits price/amount)
+  - UUID correlation ID generation at Order Service boundary
+  - Dedicated `OutboxRepository` for atomic insert, FIFO retrieval, mark published, and retry count
+  - Full documentation in [docs/outbox.md](docs/outbox.md)
+- [ ] **Phase 4: Kafka Event Publishing & Inventory Consumer**
+  - Background outbox publisher streaming unpublished events to Apache Kafka
+  - Kafka topics and partition-key ordering
+  - Downstream Inventory Service event consumption and inventory workflow
+- [ ] **Phase 5: Stock Service & gRPC Integration**
   - Protocol Buffers definition in `proto/`
   - Stock Service gRPC implementation and stock reservation
-- [ ] **Phase 5: Resilience, Testing, Docker Compose & CI/CD**
+- [ ] **Phase 6: Resilience, Testing, Docker Compose & CI/CD**
   - Full docker-compose environment
   - GitHub Actions CI pipeline

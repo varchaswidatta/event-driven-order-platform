@@ -34,6 +34,7 @@ describe('OrderRepository (PostgreSQL Integration Tests)', () => {
 
   beforeEach(async () => {
     // Clean test data between tests for deterministic isolation
+    await pool.query('DELETE FROM outbox_events;');
     await pool.query('DELETE FROM order_items;');
     await pool.query('DELETE FROM orders;');
   });
@@ -41,6 +42,7 @@ describe('OrderRepository (PostgreSQL Integration Tests)', () => {
   afterAll(async () => {
     if (pool) {
       // Clean up test data
+      await pool.query('DELETE FROM outbox_events;').catch(() => {});
       await pool.query('DELETE FROM order_items;').catch(() => {});
       await pool.query('DELETE FROM orders;').catch(() => {});
       await pool.end().catch(() => {});

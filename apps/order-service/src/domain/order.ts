@@ -27,7 +27,9 @@ export interface CreateOrderItemInput {
 }
 
 export interface CreateOrderInput {
+  id?: string;
   customerId: string;
   currency?: string;
+  correlationId?: string;
   items: CreateOrderItemInput[];
 }

@@ -46,6 +46,9 @@ describe('GraphQL API Gateway -> Order Service HTTP -> PostgreSQL (End-to-End Fl
       await orderApp.close();
     }
     if (pool) {
+      await pool.query('DELETE FROM outbox_events;').catch(() => {});
+      await pool.query('DELETE FROM order_items;').catch(() => {});
+      await pool.query('DELETE FROM orders;').catch(() => {});
       await pool.end();
     }
   });
@@ -136,6 +139,16 @@ describe('GraphQL API Gateway -> Order Service HTTP -> PostgreSQL (End-to-End Fl
     );
     expect(dbItems.rows).toHaveLength(2);
     expect(dbItems.rows[0].unit_price).toBe('100.00');
+
+    // Verify outbox event persistence directly in PostgreSQL
+    const dbOutbox = await pool.query('SELECT * FROM outbox_events WHERE aggregate_id = $1', [
+      createdOrder.id,
+    ]);
+    expect(dbOutbox.rows).toHaveLength(1);
+    expect(dbOutbox.rows[0].event_type).toBe('OrderCreated');
+    expect(dbOutbox.rows[0].aggregate_type).toBe('Order');
+    expect(dbOutbox.rows[0].published_at).toBeNull();
+    expect(dbOutbox.rows[0].retry_count).toBe(0);
 
     // Query the created order through GraphQL order(id)
     const GET_ORDER_QUERY = `#graphql

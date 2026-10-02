@@ -64,6 +64,37 @@ CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
 - `unit_price`: Constrained to non-negative values (`CHECK (unit_price >= 0)`).
 - `order_id` index: Prevents full table scans when fetching order items for an order.
 
+### 3. `outbox_events` Table
+
+Stores domain events within the same database transaction as business entities (Transactional Outbox Pattern).
+
+```sql
+CREATE TABLE IF NOT EXISTS outbox_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  aggregate_type VARCHAR(64) NOT NULL,
+  aggregate_id UUID NOT NULL,
+  event_type VARCHAR(128) NOT NULL,
+  event_version INTEGER NOT NULL DEFAULT 1,
+  payload JSONB NOT NULL,
+  correlation_id UUID NOT NULL DEFAULT gen_random_uuid(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  published_at TIMESTAMPTZ NULL,
+  retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_events_unpublished
+  ON outbox_events (created_at ASC)
+  WHERE published_at IS NULL;
+```
+
+#### Key Constraints & Indexing:
+
+- `id`: Primary key matching domain `eventId`.
+- `aggregate_id`: Foreign aggregate reference (points to `orders.id`).
+- `published_at`: Stays `NULL` until published to message broker (Kafka in Phase 4).
+- `idx_outbox_events_unpublished`: Partial index over unpublished events (`WHERE published_at IS NULL`) enabling efficient polling.
+- For complete details, see [docs/outbox.md](outbox.md).
+
 ---
 
 ## Monetary Representation & Precision
@@ -86,12 +117,13 @@ BEGIN;
   INSERT INTO orders (...) VALUES (...) RETURNING id, ...;
   INSERT INTO order_items (...) VALUES (...);
   INSERT INTO order_items (...) VALUES (...);
+  INSERT INTO outbox_events (...) VALUES (...); -- OrderCreated event
 COMMIT;
 ```
 
 ### Guarantees:
 
-- **Atomicity**: An order is never created without its corresponding order items. If inserting any item fails, the entire transaction is rolled back via `ROLLBACK`.
+- **Atomicity**: An order is never created without its corresponding order items and outbox event. If inserting any item or the outbox event fails, the entire transaction is rolled back via `ROLLBACK`.
 - **Client Management**: A dedicated PostgreSQL connection client is checked out from `pg.Pool`, used for all queries within the transaction, and safely released back to the pool in a `finally` block.
 
 ---

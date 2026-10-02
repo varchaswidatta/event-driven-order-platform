@@ -2,6 +2,7 @@
 export * from './domain/order-status.js';
 export * from './domain/order.js';
 export * from './domain/money.js';
+export * from './domain/outbox-event.js';
 
 // Error exports
 export * from './errors/order.errors.js';
@@ -11,6 +12,7 @@ export * from './validation/order.schema.js';
 
 // Repository exports
 export * from './repositories/order.repository.js';
+export * from './repositories/outbox.repository.js';
 
 // Service exports
 export * from './services/order.service.js';
