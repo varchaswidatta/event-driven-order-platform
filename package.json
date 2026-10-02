@@ -15,7 +15,8 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "migrate:order": "pnpm --filter order-service run migrate"
+    "migrate:order": "pnpm --filter order-service run migrate",
+    "migrate:inventory": "pnpm --filter inventory-service run migrate"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

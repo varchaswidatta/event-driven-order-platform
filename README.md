@@ -113,16 +113,17 @@ cp .env.example .env
 
 From the repository root, you can execute commands across all packages using pnpm workspaces:
 
-| Command                  | Description                                          |
-| :----------------------- | :--------------------------------------------------- |
-| `pnpm run build`         | Builds TypeScript across all workspace packages      |
-| `pnpm run typecheck`     | Runs TypeScript type checking without emitting files |
-| `pnpm run test`          | Runs tests across workspace packages                 |
-| `pnpm run lint`          | Runs ESLint across the codebase                      |
-| `pnpm run lint:fix`      | Runs ESLint and automatically applies fixes          |
-| `pnpm run format`        | Formats all files using Prettier                     |
-| `pnpm run format:check`  | Verifies code formatting compliance                  |
-| `pnpm run migrate:order` | Runs Order Service database migrations               |
+| Command                      | Description                                          |
+| :--------------------------- | :--------------------------------------------------- |
+| `pnpm run build`             | Builds TypeScript across all workspace packages      |
+| `pnpm run typecheck`         | Runs TypeScript type checking without emitting files |
+| `pnpm run test`              | Runs tests across workspace packages                 |
+| `pnpm run lint`              | Runs ESLint across the codebase                      |
+| `pnpm run lint:fix`          | Runs ESLint and automatically applies fixes          |
+| `pnpm run format`            | Formats all files using Prettier                     |
+| `pnpm run format:check`      | Verifies code formatting compliance                  |
+| `pnpm run migrate:order`     | Runs Order Service database migrations               |
+| `pnpm run migrate:inventory` | Runs Inventory Service database migrations           |
 
 ---
 
@@ -167,10 +168,15 @@ From the repository root, you can execute commands across all packages using pnp
   - Live PostgreSQL + Kafka integration tests and fault tolerance recovery tests
   - Complete End-to-End test (GraphQL API Gateway → Order Service HTTP → PostgreSQL ACID Transaction → Outbox Publisher → Kafka `order.events`)
   - Full architectural documentation in [docs/kafka.md](docs/kafka.md)
-- [ ] **Phase 5: Inventory Service Event Consumption & Reservation**
-  - Kafka consumer group in Inventory Service listening to `order.events`
-  - Consumer-side idempotency and deduplication pattern
-  - Inventory reservation workflow and status progression
+- [x] **Phase 5: Inventory Service Event Consumption & Reservation** (Complete)
+  - Dedicated PostgreSQL database `inventory_db` with `inventory_reservations` and `inventory_reservation_items` tables (`001_create_inventory_reservations.sql`)
+  - Kafka consumer group `inventory-service` consuming `order.events` with `orderId` key affinity
+  - Strict idempotency via `order_id UNIQUE` constraint and atomic transaction handling
+  - Full domain event validation via Zod (`EventEnvelope` & `OrderCreatedPayload`)
+  - Poison-pill resilience: invalid envelopes and unsupported event types/versions safely logged and skipped; db errors trigger retry
+  - Real PostgreSQL and Kafka consumer integration tests
+  - End-to-end flow test (GraphQL Gateway → Order Service → PostgreSQL → Outbox Publisher → Kafka → Inventory Service → `inventory_db`)
+  - Full architectural documentation in [docs/inventory.md](docs/inventory.md)
 - [ ] **Phase 6: Stock Service & gRPC Integration**
   - Protocol Buffers definition in `proto/`
   - Stock Service gRPC implementation and stock reservation

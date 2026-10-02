@@ -130,9 +130,59 @@ COMMIT;
 
 ## Migration Strategy
 
-Database changes are managed via a lightweight, zero-dependency SQL migration runner (`apps/order-service/src/db/migrate.ts`):
+Database changes are managed via a lightweight, zero-dependency SQL migration runner (`apps/order-service/src/db/migrate.ts` and `apps/inventory-service/src/db/migrate.ts`):
 
 1. **Tracking Table**: Maintains a `schema_migrations` table recording each migration name and timestamp.
 2. **Deterministic Order**: Migration files in `src/db/migrations/` are sorted alphabetically/numerically (e.g., `001_create_orders.sql`).
 3. **Idempotent Execution**: Before applying each file, the runner checks `schema_migrations` to ensure no migration is applied twice.
 4. **Transactional Migrations**: Each migration runs within its own transaction (`BEGIN` ... `COMMIT`). If an error occurs, the transaction is rolled back immediately, leaving the database in a clean state.
+
+---
+
+## Inventory Database Schema (`inventory_db`)
+
+The schema for `inventory_db` is owned by the Inventory Service and managed via raw SQL migrations located in `apps/inventory-service/src/db/migrations/`.
+
+### 1. `inventory_reservations` Table
+
+Tracks reservations initiated in response to `OrderCreated` events.
+
+```sql
+CREATE TABLE IF NOT EXISTS inventory_reservations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  order_id UUID NOT NULL UNIQUE,
+  status VARCHAR(50) NOT NULL DEFAULT 'PENDING' CHECK (
+    status IN ('PENDING')
+  ),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+#### Key Constraints:
+
+- `order_id UNIQUE`: Enforces consumer idempotency. Prevents duplicate reservation rows when duplicate `OrderCreated` events are delivered by Kafka.
+- `status`: Enforces initial state `PENDING` in Phase 5.
+- `created_at` / `updated_at`: `TIMESTAMPTZ` for timezone-safe auditability.
+
+### 2. `inventory_reservation_items` Table
+
+Stores individual product quantities requested for each reservation.
+
+```sql
+CREATE TABLE IF NOT EXISTS inventory_reservation_items (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  reservation_id UUID NOT NULL REFERENCES inventory_reservations(id) ON DELETE CASCADE,
+  product_id UUID NOT NULL,
+  quantity INTEGER NOT NULL CHECK (quantity > 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_reservation_items_reservation_id ON inventory_reservation_items(reservation_id);
+```
+
+#### Key Constraints:
+
+- `quantity`: Must be positive (`CHECK (quantity > 0)`).
+- `FOREIGN KEY ... ON DELETE CASCADE`: Deleting a reservation cleanly cascades to its line items.
+- `idx_reservation_items_reservation_id`: Speeds up joins and queries by parent reservation.
