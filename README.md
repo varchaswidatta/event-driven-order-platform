@@ -157,13 +157,23 @@ From the repository root, you can execute commands across all packages using pnp
   - UUID correlation ID generation at Order Service boundary
   - Dedicated `OutboxRepository` for atomic insert, FIFO retrieval, mark published, and retry count
   - Full documentation in [docs/outbox.md](docs/outbox.md)
-- [ ] **Phase 4: Kafka Event Publishing & Inventory Consumer**
-  - Background outbox publisher streaming unpublished events to Apache Kafka
-  - Kafka topics and partition-key ordering
-  - Downstream Inventory Service event consumption and inventory workflow
-- [ ] **Phase 5: Stock Service & gRPC Integration**
+- [x] **Phase 4: Kafka Integration & Outbox Publisher** (Complete)
+  - Apache Kafka in KRaft mode via Docker Compose (`docker-compose.yml`)
+  - Topic `order.events` with key-based partitioning on `orderId`
+  - In-process `OutboxPublisher` in Order Service with at-least-once publishing semantics
+  - Dedicated `KafkaOrderProducer` abstraction using `kafkajs`
+  - Automated retry tracking (`retry_count` increment on broker failure)
+  - Unit tests covering all publisher states and edge cases
+  - Live PostgreSQL + Kafka integration tests and fault tolerance recovery tests
+  - Complete End-to-End test (GraphQL API Gateway → Order Service HTTP → PostgreSQL ACID Transaction → Outbox Publisher → Kafka `order.events`)
+  - Full architectural documentation in [docs/kafka.md](docs/kafka.md)
+- [ ] **Phase 5: Inventory Service Event Consumption & Reservation**
+  - Kafka consumer group in Inventory Service listening to `order.events`
+  - Consumer-side idempotency and deduplication pattern
+  - Inventory reservation workflow and status progression
+- [ ] **Phase 6: Stock Service & gRPC Integration**
   - Protocol Buffers definition in `proto/`
   - Stock Service gRPC implementation and stock reservation
-- [ ] **Phase 6: Resilience, Testing, Docker Compose & CI/CD**
-  - Full docker-compose environment
+- [ ] **Phase 7: Resilience, Testing, Docker Compose & CI/CD**
+  - Full multi-service docker-compose environment
   - GitHub Actions CI pipeline

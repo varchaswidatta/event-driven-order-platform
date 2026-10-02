@@ -24,6 +24,11 @@ export * from './db/migrate.js';
 // Configuration exports
 export * from './config/env.js';
 
+// Messaging exports
+export * from './messaging/kafka/kafka.client.js';
+export * from './messaging/kafka/kafka.producer.js';
+export * from './messaging/outbox.publisher.js';
+
 // HTTP server exports
 export * from './http/app.js';
 export * from './http/server.js';

@@ -4,10 +4,7 @@ import crypto from 'node:crypto';
 import { createDatabasePool } from '../../src/db/client.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import { OrderRepository } from '../../src/repositories/order.repository.js';
-import {
-  OutboxRepository,
-  IOutboxRepository,
-} from '../../src/repositories/outbox.repository.js';
+import { OutboxRepository, IOutboxRepository } from '../../src/repositories/outbox.repository.js';
 import { OrderService } from '../../src/services/order.service.js';
 import { ORDER_STATUS } from '../../src/domain/order-status.js';
 import { DatabaseOperationError } from '../../src/errors/order.errors.js';
