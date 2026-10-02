@@ -186,3 +186,98 @@ CREATE INDEX IF NOT EXISTS idx_reservation_items_reservation_id ON inventory_res
 - `quantity`: Must be positive (`CHECK (quantity > 0)`).
 - `FOREIGN KEY ... ON DELETE CASCADE`: Deleting a reservation cleanly cascades to its line items.
 - `idx_reservation_items_reservation_id`: Speeds up joins and queries by parent reservation.
+
+---
+
+## Stock Database Schema (`stock_db`)
+
+The schema for `stock_db` is owned strictly and exclusively by the Stock Service. Managed via raw SQL migrations located in `apps/stock-service/src/db/migrations/`.
+
+### 1. `products` Table
+
+Stores catalog product identifiers, SKUs, names, and retail prices.
+
+```sql
+CREATE TABLE IF NOT EXISTS products (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  sku VARCHAR(64) NOT NULL UNIQUE,
+  name VARCHAR(255) NOT NULL,
+  price NUMERIC(12, 2) NOT NULL CHECK (price >= 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
+```
+
+#### Key Constraints:
+
+- `sku UNIQUE`: SKU must be unique across the catalog.
+- `price NUMERIC(12, 2)`: Exact fixed-point numeric money representation (`CHECK (price >= 0)`).
+- `created_at` / `updated_at`: `TIMESTAMPTZ` audit timestamps.
+
+### 2. `stock` Table
+
+Maintains available and reserved quantities for each product.
+
+```sql
+CREATE TABLE IF NOT EXISTS stock (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  product_id UUID NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
+  available_quantity INTEGER NOT NULL CHECK (available_quantity >= 0),
+  reserved_quantity INTEGER NOT NULL DEFAULT 0 CHECK (reserved_quantity >= 0),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_product_id ON stock(product_id);
+```
+
+#### Key Constraints:
+
+- `product_id UNIQUE`: Exactly one stock row per product.
+- `available_quantity >= 0`: Available quantity can never drop below zero.
+- `reserved_quantity >= 0`: Reserved quantity can never drop below zero.
+- `FOREIGN KEY ... REFERENCES products(id)`: Cascades on product deletion.
+
+### 3. `stock_reservations` Table
+
+Tracks reservation audit logs on the stock service side for traceability and idempotency.
+
+```sql
+CREATE TABLE IF NOT EXISTS stock_reservations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  order_id UUID NOT NULL UNIQUE,
+  status VARCHAR(50) NOT NULL DEFAULT 'RESERVED' CHECK (
+    status IN ('RESERVED', 'RELEASED')
+  ),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_reservations_order_id ON stock_reservations(order_id);
+```
+
+#### Key Constraints:
+
+- `order_id UNIQUE`: Guarantees idempotency. Even if a duplicate gRPC `ReserveStock` call arrives with the same `order_id`, stock is not deducted a second time.
+
+### 4. `stock_reservation_items` Table
+
+Maintains line items allocated for each reservation.
+
+```sql
+CREATE TABLE IF NOT EXISTS stock_reservation_items (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  reservation_id UUID NOT NULL REFERENCES stock_reservations(id) ON DELETE CASCADE,
+  product_id UUID NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+  quantity INTEGER NOT NULL CHECK (quantity > 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_res_items_reservation_id ON stock_reservation_items(reservation_id);
+```
+
+#### Key Constraints:
+
+- `quantity > 0`: Allocated quantity must be strictly positive.
+- `product_id REFERENCES products(id) ON DELETE RESTRICT`: Protects reserved products from accidental deletion.

@@ -26,6 +26,9 @@ export * from './config/env.js';
 export * from './messaging/kafka/kafka.client.js';
 export * from './messaging/kafka/order-events.consumer.js';
 
+// gRPC Client exports
+export * from './clients/stock-service.client.js';
+
 // Startup exports
 export * from './startup.js';
 

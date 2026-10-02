@@ -121,4 +121,106 @@ describe('Inventory Service Unit Tests', () => {
       'PostgreSQL connection timeout',
     );
   });
+
+  it('delegates to StockServiceClient and includes successful stock reservation in result', async () => {
+    const mockRepo: IInventoryRepository = {
+      createReservation: vi.fn().mockResolvedValue({
+        reservation: {
+          id: '77777777-7777-4777-8777-777777777777',
+          orderId: sampleEvent.payload.orderId,
+          status: RESERVATION_STATUS.PENDING,
+          items: [],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        alreadyExisted: false,
+      }),
+      findReservationByOrderId: vi.fn(),
+      findReservationById: vi.fn(),
+    };
+
+    const mockStockClient = {
+      reserveStock: vi.fn().mockResolvedValue({
+        success: true,
+        reservationId: 'stock-res-123',
+      }),
+      close: vi.fn(),
+    };
+
+    const service = new InventoryService(mockRepo, mockStockClient);
+    const result = await service.processOrderCreatedEvent(sampleEvent);
+
+    expect(mockStockClient.reserveStock).toHaveBeenCalledWith(
+      sampleEvent.payload.orderId,
+      sampleEvent.payload.items,
+    );
+    expect(result.stockReservation).toEqual({
+      success: true,
+      reservationId: 'stock-res-123',
+    });
+  });
+
+  it('captures business failure (INSUFFICIENT_STOCK) without throwing', async () => {
+    const mockRepo: IInventoryRepository = {
+      createReservation: vi.fn().mockResolvedValue({
+        reservation: {
+          id: '77777777-7777-4777-8777-777777777777',
+          orderId: sampleEvent.payload.orderId,
+          status: RESERVATION_STATUS.PENDING,
+          items: [],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        alreadyExisted: false,
+      }),
+      findReservationByOrderId: vi.fn(),
+      findReservationById: vi.fn(),
+    };
+
+    const mockStockClient = {
+      reserveStock: vi.fn().mockResolvedValue({
+        success: false,
+        failureReason: 'INSUFFICIENT_STOCK',
+      }),
+      close: vi.fn(),
+    };
+
+    const service = new InventoryService(mockRepo, mockStockClient);
+    const result = await service.processOrderCreatedEvent(sampleEvent);
+
+    expect(result.stockReservation).toEqual({
+      success: false,
+      failureReason: 'INSUFFICIENT_STOCK',
+    });
+  });
+
+  it('re-throws infrastructure errors (e.g. StockServiceUnavailableError) to prevent Kafka acknowledgment', async () => {
+    const mockRepo: IInventoryRepository = {
+      createReservation: vi.fn().mockResolvedValue({
+        reservation: {
+          id: '77777777-7777-4777-8777-777777777777',
+          orderId: sampleEvent.payload.orderId,
+          status: RESERVATION_STATUS.PENDING,
+          items: [],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        alreadyExisted: false,
+      }),
+      findReservationByOrderId: vi.fn(),
+      findReservationById: vi.fn(),
+    };
+
+    const mockStockClient = {
+      reserveStock: vi
+        .fn()
+        .mockRejectedValue(new Error('Stock Service is unreachable: UNAVAILABLE')),
+      close: vi.fn(),
+    };
+
+    const service = new InventoryService(mockRepo, mockStockClient);
+    await expect(service.processOrderCreatedEvent(sampleEvent)).rejects.toThrow(
+      'Stock Service is unreachable: UNAVAILABLE',
+    );
+  });
 });

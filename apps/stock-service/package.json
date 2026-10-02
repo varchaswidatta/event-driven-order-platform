@@ -5,7 +5,23 @@
   "description": "Stock Service providing gRPC endpoints for stock validation and reservation",
   "main": "dist/index.js",
   "scripts": {
+    "dev": "tsc -w",
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "migrate": "node dist/db/migrate.js",
+    "seed": "node dist/db/seed.js",
+    "test": "vitest run --fileParallelism=false",
+    "test:watch": "vitest --fileParallelism=false"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.5",
+    "@grpc/proto-loader": "^0.8.1",
+    "pg": "^8.23.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "vitest": "^5.0.3"
   }
 }

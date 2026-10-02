@@ -1,6 +1,7 @@
 import { OrderCreatedEvent } from '../domain/events.js';
 import { Reservation } from '../domain/reservation.js';
 import { IInventoryRepository } from '../repositories/inventory.repository.js';
+import { IStockServiceClient, StockReservationResponse } from '../clients/stock-service.client.js';
 import { eventEnvelopeSchema, orderCreatedPayloadSchema } from '../validation/event.schema.js';
 import {
   InvalidEventError,
@@ -15,6 +16,7 @@ const SUPPORTED_EVENT_VERSION = 1;
 export interface ProcessEventResult {
   reservation: Reservation;
   alreadyExisted: boolean;
+  stockReservation?: StockReservationResponse;
 }
 
 export interface IInventoryService {
@@ -23,7 +25,10 @@ export interface IInventoryService {
 }
 
 export class InventoryService implements IInventoryService {
-  constructor(private readonly repository: IInventoryRepository) {}
+  constructor(
+    private readonly repository: IInventoryRepository,
+    private readonly stockClient?: IStockServiceClient,
+  ) {}
 
   /**
    * Validates and parses a raw Kafka message value into a typed OrderCreated event.
@@ -96,9 +101,21 @@ export class InventoryService implements IInventoryService {
       })),
     });
 
+    let stockReservation: StockReservationResponse | undefined;
+    if (this.stockClient) {
+      stockReservation = await this.stockClient.reserveStock(
+        event.payload.orderId,
+        event.payload.items.map((item) => ({
+          productId: item.productId,
+          quantity: item.quantity,
+        })),
+      );
+    }
+
     return {
       reservation: result.reservation,
       alreadyExisted: result.alreadyExisted,
+      stockReservation,
     };
   }
 }

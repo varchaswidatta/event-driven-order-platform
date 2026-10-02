@@ -51,3 +51,21 @@ export class UnsupportedEventVersionError extends InventoryDomainError {
     this.eventVersion = eventVersion;
   }
 }
+
+export class StockServiceUnavailableError extends InventoryDomainError {
+  constructor(message: string) {
+    super(`Stock Service is unavailable: ${message}`);
+  }
+}
+
+export class StockServiceTimeoutError extends InventoryDomainError {
+  constructor(message: string) {
+    super(`Stock Service request timed out: ${message}`);
+  }
+}
+
+export class StockServiceError extends InventoryDomainError {
+  constructor(message: string) {
+    super(`Stock Service returned an error: ${message}`);
+  }
+}

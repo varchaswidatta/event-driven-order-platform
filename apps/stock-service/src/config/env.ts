@@ -27,12 +27,9 @@ const envSchema = z.object({
   POSTGRES_PORT: z.coerce.number().int().positive().default(5432),
   POSTGRES_USER: z.string().min(1, 'POSTGRES_USER cannot be empty').default('app'),
   POSTGRES_PASSWORD: z.string().default('local_password'),
-  INVENTORY_DB_NAME: z.string().min(1, 'INVENTORY_DB_NAME cannot be empty').default('inventory_db'),
-  KAFKA_BROKERS: z.string().default('localhost:9092'),
-  KAFKA_CLIENT_ID: z.string().default('inventory-service'),
-  KAFKA_GROUP_ID: z.string().default('inventory-service'),
-  STOCK_SERVICE_GRPC_HOST: z.string().default('localhost'),
+  STOCK_DB_NAME: z.string().min(1, 'STOCK_DB_NAME cannot be empty').default('stock_db'),
   STOCK_SERVICE_GRPC_PORT: z.coerce.number().int().positive().default(50051),
+  STOCK_SERVICE_GRPC_HOST: z.string().default('0.0.0.0'),
 });
 
 function loadEnv(): z.infer<typeof envSchema> {
@@ -41,7 +38,7 @@ function loadEnv(): z.infer<typeof envSchema> {
     const errorDetails = result.error.issues
       .map((issue) => ` - ${issue.path.join('.')}: ${issue.message}`)
       .join('\n');
-    throw new Error(`[InventoryService] Invalid environment configuration:\n${errorDetails}`);
+    throw new Error(`[StockService] Invalid environment configuration:\n${errorDetails}`);
   }
   return result.data;
 }

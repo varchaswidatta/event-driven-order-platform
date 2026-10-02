@@ -124,6 +124,8 @@ From the repository root, you can execute commands across all packages using pnp
 | `pnpm run format:check`      | Verifies code formatting compliance                  |
 | `pnpm run migrate:order`     | Runs Order Service database migrations               |
 | `pnpm run migrate:inventory` | Runs Inventory Service database migrations           |
+| `pnpm run migrate:stock`     | Runs Stock Service database migrations               |
+| `pnpm run seed:stock`        | Seeds deterministic sample products & stock          |
 
 ---
 
@@ -177,9 +179,16 @@ From the repository root, you can execute commands across all packages using pnp
   - Real PostgreSQL and Kafka consumer integration tests
   - End-to-end flow test (GraphQL Gateway → Order Service → PostgreSQL → Outbox Publisher → Kafka → Inventory Service → `inventory_db`)
   - Full architectural documentation in [docs/inventory.md](docs/inventory.md)
-- [ ] **Phase 6: Stock Service & gRPC Integration**
-  - Protocol Buffers definition in `proto/`
-  - Stock Service gRPC implementation and stock reservation
+- [x] **Phase 6: Stock Service & gRPC Reservation** (Complete)
+  - Dedicated PostgreSQL database `stock_db` with `products`, `stock`, `stock_reservations`, and `stock_reservation_items` tables
+  - gRPC server implementing `StockService.ReserveStock` and contract placeholder `ReleaseStock` using Protocol Buffers (`proto/stock.proto`)
+  - Concurrency-safe atomic reservation transactions via PostgreSQL row-level locks (`SELECT ... FOR UPDATE`) with lexicographical product ID sorting to prevent deadlocks
+  - Strict all-or-nothing stock reservation semantics (no partial allocations)
+  - Idempotent gRPC reservation handling via `order_id UNIQUE` constraint on `stock_reservations`
+  - Decoupled `StockServiceClient` in Inventory Service with configurable request deadlines, timeouts, and error sanitization
+  - Clean separation of business failures (`INSUFFICIENT_STOCK`) from infrastructure failures (`UNAVAILABLE`, `DEADLINE_EXCEEDED`) ensuring reliable Kafka consumer retry semantics
+  - Unit tests, concurrency tests, gRPC integration tests, and full Phase 6 End-to-End flow tests (GraphQL → Order Service → Outbox → Kafka → Inventory Service → gRPC → Stock Service → `stock_db`)
+  - Full architectural documentation in [docs/stock.md](docs/stock.md) and [docs/grpc.md](docs/grpc.md)
 - [ ] **Phase 7: Resilience, Testing, Docker Compose & CI/CD**
   - Full multi-service docker-compose environment
   - GitHub Actions CI pipeline
