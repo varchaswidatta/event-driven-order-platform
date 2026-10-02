@@ -14,6 +14,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "fastify": "^5.12.5",
     "pg": "^8.23.1",
     "zod": "^4.6.5"
   },

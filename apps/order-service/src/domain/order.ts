@@ -28,6 +28,6 @@ export interface CreateOrderItemInput {
 
 export interface CreateOrderInput {
   customerId: string;
-  currency: string;
+  currency?: string;
   items: CreateOrderItemInput[];
 }

@@ -60,4 +60,17 @@ export class OrderService {
   async getOrdersByCustomerId(customerId: string): Promise<Order[]> {
     return this.orderRepository.findOrdersByCustomerId(customerId);
   }
+
+  /**
+   * Retrieves orders, optionally filtered by customer ID.
+   */
+  async getOrders(customerId?: string): Promise<Order[]> {
+    if (customerId) {
+      return this.orderRepository.findOrdersByCustomerId(customerId);
+    }
+    if (this.orderRepository.findAllOrders) {
+      return this.orderRepository.findAllOrders();
+    }
+    return [];
+  }
 }

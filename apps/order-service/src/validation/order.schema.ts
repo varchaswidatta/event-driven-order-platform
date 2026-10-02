@@ -19,7 +19,8 @@ export const createOrderSchema = z.object({
   currency: z
     .string()
     .length(3, 'Currency must be exactly 3 characters')
-    .regex(/^[A-Z]{3}$/, 'Currency must be a 3-character uppercase ISO code'),
+    .regex(/^[A-Z]{3}$/, 'Currency must be a 3-character uppercase ISO code')
+    .default('USD'),
   items: z
     .array(createOrderItemSchema)
     .min(1, 'Order items must not be empty. At least one item is required'),

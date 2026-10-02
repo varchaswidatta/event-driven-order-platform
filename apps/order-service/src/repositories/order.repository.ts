@@ -21,6 +21,7 @@ export interface IOrderRepository {
   createOrder(data: CreateOrderRepositoryInput): Promise<Order>;
   findOrderById(id: string): Promise<Order | null>;
   findOrdersByCustomerId(customerId: string): Promise<Order[]>;
+  findAllOrders?(): Promise<Order[]>;
 }
 
 export class OrderRepository implements IOrderRepository {
@@ -264,6 +265,78 @@ export class OrderRepository implements IOrderRepository {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown database error';
       throw new DatabaseOperationError(`Failed to fetch orders by customer ID: ${message}`);
+    }
+  }
+
+  /**
+   * Retrieves all orders with their items, avoiding N+1 queries.
+   */
+  async findAllOrders(): Promise<Order[]> {
+    try {
+      const ordersSql = `
+        SELECT id, customer_id, status, total_amount, currency, created_at, updated_at
+        FROM orders
+        ORDER BY created_at DESC;
+      `;
+      const ordersResult = await this.pool.query<{
+        id: string;
+        customer_id: string;
+        status: string;
+        total_amount: string;
+        currency: string;
+        created_at: Date;
+        updated_at: Date;
+      }>(ordersSql);
+
+      if (ordersResult.rows.length === 0) {
+        return [];
+      }
+
+      const orderIds = ordersResult.rows.map((row) => row.id);
+
+      const itemsSql = `
+        SELECT id, order_id, product_id, quantity, unit_price, created_at
+        FROM order_items
+        WHERE order_id = ANY($1::uuid[])
+        ORDER BY created_at ASC;
+      `;
+      const itemsResult = await this.pool.query<{
+        id: string;
+        order_id: string;
+        product_id: string;
+        quantity: number;
+        unit_price: string;
+        created_at: Date;
+      }>(itemsSql, [orderIds]);
+
+      const itemsByOrderId = new Map<string, OrderItem[]>();
+      for (const r of itemsResult.rows) {
+        const item: OrderItem = {
+          id: r.id,
+          orderId: r.order_id,
+          productId: r.product_id,
+          quantity: Number(r.quantity),
+          unitPrice: String(r.unit_price),
+          createdAt: r.created_at,
+        };
+        const existing = itemsByOrderId.get(r.order_id) ?? [];
+        existing.push(item);
+        itemsByOrderId.set(r.order_id, existing);
+      }
+
+      return ordersResult.rows.map((orderRow) => ({
+        id: orderRow.id,
+        customerId: orderRow.customer_id,
+        status: orderRow.status as OrderStatus,
+        totalAmount: String(orderRow.total_amount),
+        currency: orderRow.currency,
+        items: itemsByOrderId.get(orderRow.id) ?? [],
+        createdAt: orderRow.created_at,
+        updatedAt: orderRow.updated_at,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown database error';
+      throw new DatabaseOperationError(`Failed to fetch all orders: ${message}`);
     }
   }
 }

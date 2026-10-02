@@ -133,23 +133,28 @@ From the repository root, you can execute commands across all packages using pnp
   - Base TypeScript, ESLint, and Prettier configurations
   - Directory skeleton and placeholder services
   - Architecture documentation outlines
-- [x] **Phase 1: Order Service & PostgreSQL Persistence** (Complete — Ready for Review)
+- [x] **Phase 1: Order Service & PostgreSQL Persistence** (Complete)
   - Raw PostgreSQL persistence via `pg` (no ORM)
   - SQL migration runner and `001_create_orders.sql`
   - Atomic transaction handling (`orders` + `order_items`)
   - Domain models and clean repository/service layering
   - Input validation via Zod
   - Exact decimal-safe monetary arithmetic via `BigInt`
-  - Unit tests (17 passed) and PostgreSQL integration test setup
-- [ ] **Phase 2: Service Contracts & gRPC**
+  - Unit tests and real PostgreSQL integration tests
+- [x] **Phase 2: GraphQL API Gateway & Order Service Integration** (Complete)
+  - Apollo Server GraphQL API Gateway on `http://localhost:4000/graphql`
+  - Internal Fastify HTTP server for Order Service on `http://localhost:4001`
+  - Decoupled `OrderServiceClient` communicating via HTTP/JSON (zero direct database coupling)
+  - Custom `DateTime` and `Decimal` GraphQL scalars
+  - Typed `createOrder` mutation, `order(id)` and `orders(customerId)` queries
+  - End-to-end integration tests (Client → GraphQL Gateway → Order Service HTTP → PostgreSQL)
+- [ ] **Phase 3: Event-Driven Core & Transactional Outbox Pattern**
+  - Transactional Outbox table and event publishing
+  - Apache Kafka event infrastructure
+  - Inventory Service event consumer
+- [ ] **Phase 4: Stock Service & gRPC Integration**
   - Protocol Buffers definition in `proto/`
-  - Stock Service gRPC implementation
-- [ ] **Phase 3: Event-Driven Core & Outbox Pattern**
-  - Transactional Outbox pattern implementation in Order Service
-  - Kafka event publishing and Inventory Service consumer
-- [ ] **Phase 4: API Gateway & GraphQL**
-  - Apollo/GraphQL gateway integration
-  - End-to-end flow validation
-- [ ] **Phase 5: Resilience, Testing & CI/CD**
-  - Integration testing with Testcontainers
+  - Stock Service gRPC implementation and stock reservation
+- [ ] **Phase 5: Resilience, Testing, Docker Compose & CI/CD**
+  - Full docker-compose environment
   - GitHub Actions CI pipeline
