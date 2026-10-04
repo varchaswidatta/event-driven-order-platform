@@ -33,6 +33,8 @@ const envSchema = z.object({
   KAFKA_GROUP_ID: z.string().default('inventory-service'),
   STOCK_SERVICE_GRPC_HOST: z.string().default('localhost'),
   STOCK_SERVICE_GRPC_PORT: z.coerce.number().int().positive().default(50051),
+  OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(1000),
+  OUTBOX_BATCH_SIZE: z.coerce.number().int().positive().default(100),
 });
 
 function loadEnv(): z.infer<typeof envSchema> {

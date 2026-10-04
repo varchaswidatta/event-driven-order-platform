@@ -121,8 +121,16 @@ describe('Inventory Service Unit Tests', () => {
       'PostgreSQL connection timeout',
     );
   });
-
   it('delegates to StockServiceClient and includes successful stock reservation in result', async () => {
+    const mockUpdatedReservation = {
+      id: '77777777-7777-4777-8777-777777777777',
+      orderId: sampleEvent.payload.orderId,
+      status: RESERVATION_STATUS.RESERVED,
+      items: [],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
     const mockRepo: IInventoryRepository = {
       createReservation: vi.fn().mockResolvedValue({
         reservation: {
@@ -137,6 +145,7 @@ describe('Inventory Service Unit Tests', () => {
       }),
       findReservationByOrderId: vi.fn(),
       findReservationById: vi.fn(),
+      updateReservationStatus: vi.fn().mockResolvedValue(mockUpdatedReservation),
     };
 
     const mockStockClient = {
@@ -154,13 +163,32 @@ describe('Inventory Service Unit Tests', () => {
       sampleEvent.payload.orderId,
       sampleEvent.payload.items,
     );
+    expect(mockRepo.updateReservationStatus).toHaveBeenCalledWith(
+      sampleEvent.payload.orderId,
+      RESERVATION_STATUS.RESERVED,
+      expect.objectContaining({
+        eventType: 'InventoryReserved',
+        aggregateId: sampleEvent.payload.orderId,
+        correlationId: sampleEvent.correlationId,
+      }),
+    );
+    expect(result.reservation.status).toBe(RESERVATION_STATUS.RESERVED);
     expect(result.stockReservation).toEqual({
       success: true,
       reservationId: 'stock-res-123',
     });
   });
 
-  it('captures business failure (INSUFFICIENT_STOCK) without throwing', async () => {
+  it('captures business failure (INSUFFICIENT_STOCK) without throwing and emits InventoryReservationFailed', async () => {
+    const mockUpdatedReservation = {
+      id: '77777777-7777-4777-8777-777777777777',
+      orderId: sampleEvent.payload.orderId,
+      status: RESERVATION_STATUS.FAILED,
+      items: [],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
     const mockRepo: IInventoryRepository = {
       createReservation: vi.fn().mockResolvedValue({
         reservation: {
@@ -175,6 +203,7 @@ describe('Inventory Service Unit Tests', () => {
       }),
       findReservationByOrderId: vi.fn(),
       findReservationById: vi.fn(),
+      updateReservationStatus: vi.fn().mockResolvedValue(mockUpdatedReservation),
     };
 
     const mockStockClient = {
@@ -188,6 +217,19 @@ describe('Inventory Service Unit Tests', () => {
     const service = new InventoryService(mockRepo, mockStockClient);
     const result = await service.processOrderCreatedEvent(sampleEvent);
 
+    expect(mockRepo.updateReservationStatus).toHaveBeenCalledWith(
+      sampleEvent.payload.orderId,
+      RESERVATION_STATUS.FAILED,
+      expect.objectContaining({
+        eventType: 'InventoryReservationFailed',
+        aggregateId: sampleEvent.payload.orderId,
+        correlationId: sampleEvent.correlationId,
+        payload: expect.objectContaining({
+          reason: 'INSUFFICIENT_STOCK',
+        }),
+      }),
+    );
+    expect(result.reservation.status).toBe(RESERVATION_STATUS.FAILED);
     expect(result.stockReservation).toEqual({
       success: false,
       failureReason: 'INSUFFICIENT_STOCK',

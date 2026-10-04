@@ -7,16 +7,20 @@ import { OrderService } from '../services/order.service.js';
 import { buildHttpApp } from './app.js';
 import { KafkaOrderProducer } from '../messaging/kafka/kafka.producer.js';
 import { OutboxPublisher } from '../messaging/outbox.publisher.js';
+import { InventoryEventsConsumer } from '../messaging/kafka/inventory-events.consumer.js';
+import { createKafkaClient } from '../messaging/kafka/kafka.client.js';
 
 export interface ServerOptions {
   port?: number;
   startPublisher?: boolean;
+  startConsumer?: boolean;
 }
 
 export interface RunningServer {
   app: FastifyInstance;
   port: number;
   publisher?: OutboxPublisher;
+  consumer?: InventoryEventsConsumer;
   close: () => Promise<void>;
 }
 
@@ -25,10 +29,11 @@ export async function startHttpServer(
 ): Promise<RunningServer> {
   const options: ServerOptions =
     typeof portOrOptions === 'number'
-      ? { port: portOrOptions, startPublisher: true }
+      ? { port: portOrOptions, startPublisher: true, startConsumer: true }
       : {
           port: portOrOptions?.port ?? env.ORDER_SERVICE_PORT,
           startPublisher: portOrOptions?.startPublisher ?? true,
+          startConsumer: portOrOptions?.startConsumer ?? true,
         };
 
   const port = options.port!;
@@ -54,7 +59,24 @@ export async function startHttpServer(
     }
   }
 
+  let consumer: InventoryEventsConsumer | undefined;
+  if (options.startConsumer) {
+    try {
+      const kafka = createKafkaClient();
+      consumer = new InventoryEventsConsumer(kafka, repository, {
+        groupId: env.KAFKA_GROUP_ID,
+      });
+      await consumer.start();
+      console.log('[OrderService] InventoryEventsConsumer started successfully');
+    } catch (err) {
+      console.error('[OrderService] Failed to start InventoryEventsConsumer:', err);
+    }
+  }
+
   const close = async (): Promise<void> => {
+    if (consumer) {
+      await consumer.stop();
+    }
     if (publisher) {
       await publisher.stop();
     }
@@ -62,5 +84,5 @@ export async function startHttpServer(
     await closeDatabasePool();
   };
 
-  return { app, port, publisher, close };
+  return { app, port, publisher, consumer, close };
 }

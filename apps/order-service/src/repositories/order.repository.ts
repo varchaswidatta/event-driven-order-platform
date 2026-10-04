@@ -1,7 +1,7 @@
 import { Pool } from 'pg';
 import { Order, OrderItem } from '../domain/order.js';
 import { OrderStatus } from '../domain/order-status.js';
-import { DatabaseOperationError } from '../errors/order.errors.js';
+import { DatabaseOperationError, OrderNotFoundError } from '../errors/order.errors.js';
 import {
   InsertOutboxEventInput,
   IOutboxRepository,
@@ -23,11 +23,17 @@ export interface CreateOrderRepositoryInput {
   outboxEvent?: InsertOutboxEventInput;
 }
 
+export interface UpdateOrderStatusResult {
+  order: Order;
+  alreadyUpdated: boolean;
+}
+
 export interface IOrderRepository {
   createOrder(data: CreateOrderRepositoryInput): Promise<Order>;
   findOrderById(id: string): Promise<Order | null>;
   findOrdersByCustomerId(customerId: string): Promise<Order[]>;
   findAllOrders?(): Promise<Order[]>;
+  updateOrderStatus(orderId: string, status: OrderStatus): Promise<UpdateOrderStatusResult>;
 }
 
 export class OrderRepository implements IOrderRepository {
@@ -379,6 +385,206 @@ export class OrderRepository implements IOrderRepository {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown database error';
       throw new DatabaseOperationError(`Failed to fetch all orders: ${message}`);
+    }
+  }
+
+  /**
+   * Updates an order's status. Returns the updated order and whether the status
+   * was already set (idempotent guard). Only updates from PENDING status to avoid
+   * conflicting concurrent transitions.
+   */
+  async updateOrderStatus(orderId: string, status: OrderStatus): Promise<UpdateOrderStatusResult> {
+    const client = await this.pool.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      // Lock the order row and check current status
+      const lockSql = `
+        SELECT id, customer_id, status, total_amount, currency, created_at, updated_at
+        FROM orders
+        WHERE id = $1
+        FOR UPDATE;
+      `;
+      const lockResult = await client.query<{
+        id: string;
+        customer_id: string;
+        status: string;
+        total_amount: string;
+        currency: string;
+        created_at: Date;
+        updated_at: Date;
+      }>(lockSql, [orderId]);
+
+      const orderRow = lockResult.rows[0];
+      if (!orderRow) {
+        await client.query('ROLLBACK');
+        throw new OrderNotFoundError(orderId);
+      }
+
+      // Idempotent: if already in the target status, return without update
+      if (orderRow.status === status) {
+        await client.query('COMMIT');
+
+        const itemsSql = `
+          SELECT id, order_id, product_id, quantity, unit_price, created_at
+          FROM order_items
+          WHERE order_id = $1
+          ORDER BY created_at ASC;
+        `;
+        const itemsResult = await client.query<{
+          id: string;
+          order_id: string;
+          product_id: string;
+          quantity: number;
+          unit_price: string;
+          created_at: Date;
+        }>(itemsSql, [orderId]);
+
+        return {
+          order: {
+            id: orderRow.id,
+            customerId: orderRow.customer_id,
+            status: orderRow.status as OrderStatus,
+            totalAmount: String(orderRow.total_amount),
+            currency: orderRow.currency,
+            items: itemsResult.rows.map((r) => ({
+              id: r.id,
+              orderId: r.order_id,
+              productId: r.product_id,
+              quantity: Number(r.quantity),
+              unitPrice: String(r.unit_price),
+              createdAt: r.created_at,
+            })),
+            createdAt: orderRow.created_at,
+            updatedAt: orderRow.updated_at,
+          },
+          alreadyUpdated: true,
+        };
+      }
+
+      // Explicit domain status transition rules
+      const validTransitions: Record<string, string[]> = {
+        PENDING: ['INVENTORY_PROCESSING', 'CONFIRMED', 'INVENTORY_FAILED'],
+        INVENTORY_PROCESSING: ['CONFIRMED', 'INVENTORY_FAILED'],
+        CONFIRMED: [],
+        INVENTORY_FAILED: [],
+      };
+
+      const allowed = validTransitions[orderRow.status];
+      if (!allowed || !allowed.includes(status)) {
+        await client.query('COMMIT');
+        console.warn(
+          `[OrderRepository] Disallowed status transition from ${orderRow.status} to ${status} for order ${orderId}`,
+        );
+
+        const itemsSql = `
+          SELECT id, order_id, product_id, quantity, unit_price, created_at
+          FROM order_items
+          WHERE order_id = $1
+          ORDER BY created_at ASC;
+        `;
+        const itemsResult = await client.query<{
+          id: string;
+          order_id: string;
+          product_id: string;
+          quantity: number;
+          unit_price: string;
+          created_at: Date;
+        }>(itemsSql, [orderId]);
+
+        return {
+          order: {
+            id: orderRow.id,
+            customerId: orderRow.customer_id,
+            status: orderRow.status as OrderStatus,
+            totalAmount: String(orderRow.total_amount),
+            currency: orderRow.currency,
+            items: itemsResult.rows.map((r) => ({
+              id: r.id,
+              orderId: r.order_id,
+              productId: r.product_id,
+              quantity: Number(r.quantity),
+              unitPrice: String(r.unit_price),
+              createdAt: r.created_at,
+            })),
+            createdAt: orderRow.created_at,
+            updatedAt: orderRow.updated_at,
+          },
+          alreadyUpdated: true,
+        };
+      }
+
+      // Update the status
+      const updateSql = `
+        UPDATE orders
+        SET status = $2, updated_at = NOW()
+        WHERE id = $1
+        RETURNING id, customer_id, status, total_amount, currency, created_at, updated_at;
+      `;
+      const updateResult = await client.query<{
+        id: string;
+        customer_id: string;
+        status: string;
+        total_amount: string;
+        currency: string;
+        created_at: Date;
+        updated_at: Date;
+      }>(updateSql, [orderId, status]);
+
+      const updatedRow = updateResult.rows[0];
+      if (!updatedRow) {
+        throw new DatabaseOperationError(`Failed to update order status for ID "${orderId}"`);
+      }
+
+      const itemsSql = `
+        SELECT id, order_id, product_id, quantity, unit_price, created_at
+        FROM order_items
+        WHERE order_id = $1
+        ORDER BY created_at ASC;
+      `;
+      const itemsResult = await client.query<{
+        id: string;
+        order_id: string;
+        product_id: string;
+        quantity: number;
+        unit_price: string;
+        created_at: Date;
+      }>(itemsSql, [orderId]);
+
+      await client.query('COMMIT');
+
+      return {
+        order: {
+          id: updatedRow.id,
+          customerId: updatedRow.customer_id,
+          status: updatedRow.status as OrderStatus,
+          totalAmount: String(updatedRow.total_amount),
+          currency: updatedRow.currency,
+          items: itemsResult.rows.map((r) => ({
+            id: r.id,
+            orderId: r.order_id,
+            productId: r.product_id,
+            quantity: Number(r.quantity),
+            unitPrice: String(r.unit_price),
+            createdAt: r.created_at,
+          })),
+          createdAt: updatedRow.created_at,
+          updatedAt: updatedRow.updated_at,
+        },
+        alreadyUpdated: false,
+      };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {
+        // Rollback failure handler
+      });
+      if (error instanceof DatabaseOperationError) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : 'Unknown database error';
+      throw new DatabaseOperationError(`Failed to update order status: ${message}`);
+    } finally {
+      client.release();
     }
   }
 }

@@ -11,6 +11,7 @@ export * from './validation/event.schema.js';
 
 // Repository exports
 export * from './repositories/inventory.repository.js';
+export * from './repositories/outbox.repository.js';
 
 // Service exports
 export * from './services/inventory.service.js';
@@ -24,7 +25,9 @@ export * from './config/env.js';
 
 // Messaging exports
 export * from './messaging/kafka/kafka.client.js';
+export * from './messaging/kafka/kafka.producer.js';
 export * from './messaging/kafka/order-events.consumer.js';
+export * from './messaging/outbox.publisher.js';
 
 // gRPC Client exports
 export * from './clients/stock-service.client.js';

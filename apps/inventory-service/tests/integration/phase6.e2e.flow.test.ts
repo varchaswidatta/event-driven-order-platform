@@ -275,7 +275,7 @@ describe('Phase 6 Complete End-to-End Flow (GraphQL -> Order -> Outbox -> Kafka 
 
     expect(invRes).not.toBeNull();
     expect(invRes!.orderId).toBe(createdOrder.id);
-    expect(invRes!.status).toBe(RESERVATION_STATUS.PENDING);
+    expect([RESERVATION_STATUS.PENDING, RESERVATION_STATUS.RESERVED]).toContain(invRes!.status);
     expect(invRes!.items).toHaveLength(2);
 
     // 6. Poll stock_db until Stock Service records the gRPC reservation

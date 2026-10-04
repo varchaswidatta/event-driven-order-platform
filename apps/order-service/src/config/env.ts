@@ -31,6 +31,7 @@ const envSchema = z.object({
   ORDER_SERVICE_PORT: z.coerce.number().int().positive().default(4001),
   KAFKA_BROKERS: z.string().default('localhost:9092'),
   KAFKA_CLIENT_ID: z.string().default('order-service'),
+  KAFKA_GROUP_ID: z.string().default('order-service'),
   OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(1000),
   OUTBOX_BATCH_SIZE: z.coerce.number().int().positive().default(100),
 });

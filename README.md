@@ -6,38 +6,43 @@ This project serves as an end-to-end reference implementation for resilient, dis
 
 ---
 
-## Planned Architecture
+## Architecture Flow
 
-> [!NOTE]
-> The architecture diagram and flow below represent the **planned target architecture** for the platform. In this initial setup (Phase 0), the monorepo foundation, workspace configurations, and structural boundaries are established. Implementation will be added incrementally in subsequent phases.
+The complete end-to-end asynchronous order fulfillment workflow:
 
 ```text
 Client
   ↓
 GraphQL API Gateway
-  ↓
+  ↓ HTTP
 Order Service
+  ↓ ACID
+PostgreSQL (order_db) + Transactional Outbox
   ↓
-PostgreSQL + Transactional Outbox
-  ↓
-Kafka
+Kafka (order.events)
   ↓
 Inventory Service
-  ↓
-gRPC
-  ↓
+  ↓ gRPC
 Stock Service
+  ↓ ACID
+PostgreSQL (stock_db)
   ↓
-PostgreSQL
+Inventory Service (Outbox)
+  ↓
+Kafka (inventory.events)
+  ↓
+Order Service (Consumer)
+  ↓
+PostgreSQL (order_db: CONFIRMED / INVENTORY_FAILED)
 ```
 
 ### Architectural Highlights
 
-- **GraphQL API Gateway**: Single point of ingress for clients, providing typed queries and mutations.
+- **GraphQL API Gateway**: Single point of ingress for clients, providing typed queries and mutations without coupling to backend message brokers or storage.
 - **Order Service**: Manages order creation, lifecycle state transitions, and guarantees atomic event publishing via the **Transactional Outbox Pattern**.
-- **Apache Kafka**: High-throughput distributed event log serving as the asynchronous event backbone.
-- **Inventory Service**: Event-driven consumer processing order events and orchestrating stock availability checks.
-- **Stock Service**: High-performance internal service handling stock reservations and allocations via **gRPC**.
+- **Apache Kafka**: High-throughput distributed streaming backbone operating `order.events` and `inventory.events` topics with deterministic partition affinity on `orderId`.
+- **Inventory Service**: Event-driven consumer processing `order.events`, orchestrating stock reservations via gRPC, and publishing results to `inventory.events` via its own transactional outbox.
+- **Stock Service**: High-performance internal service handling atomic stock reservations with deadlock-free row-level locking via **gRPC**.
 - **PostgreSQL**: Dedicated database-per-service isolation (`order_db`, `inventory_db`, `stock_db`).
 
 ---
@@ -189,6 +194,21 @@ From the repository root, you can execute commands across all packages using pnp
   - Clean separation of business failures (`INSUFFICIENT_STOCK`) from infrastructure failures (`UNAVAILABLE`, `DEADLINE_EXCEEDED`) ensuring reliable Kafka consumer retry semantics
   - Unit tests, concurrency tests, gRPC integration tests, and full Phase 6 End-to-End flow tests (GraphQL → Order Service → Outbox → Kafka → Inventory Service → gRPC → Stock Service → `stock_db`)
   - Full architectural documentation in [docs/stock.md](docs/stock.md) and [docs/grpc.md](docs/grpc.md)
-- [ ] **Phase 7: Resilience, Testing, Docker Compose & CI/CD**
-  - Full multi-service docker-compose environment
-  - GitHub Actions CI pipeline
+- [x] **Phase 7: Complete Asynchronous Order Fulfillment Workflow** (Complete)
+  - Dedicated outbox table `outbox_events` and schema migration in `inventory_db` (`002_create_outbox_events.sql`)
+  - Extended reservation status constraint (`PENDING`, `RESERVED`, `FAILED`)
+  - Inventory Service Transactional Outbox: atomic reservation status update and outbox event creation (`InventoryReserved` or `InventoryReservationFailed`)
+  - Kafka topic `inventory.events` with 3 partitions and message key `orderId`
+  - In-process `InventoryOutboxPublisher` dispatching reservation events with retry tracking and at-least-once delivery
+  - Order Service `InventoryEventsConsumer` (consumer group `order-service`) listening to `inventory.events`
+  - Deterministic state machine transitions in `OrderRepository.updateOrderStatus`:
+    - `InventoryReserved` → `CONFIRMED`
+    - `InventoryReservationFailed` → `INVENTORY_FAILED`
+  - Consumer idempotency across both services: duplicate message replays safely acknowledged without side effects
+  - Non-retryable orphaned event handling (`OrderNotFoundError`) preventing partition stalls
+  - Comprehensive unit tests, integration tests, and full End-to-End flow tests covering all scenarios (success, insufficient stock, transient infrastructure failure, duplicate delivery)
+  - Full architectural documentation in [docs/kafka.md](docs/kafka.md), [docs/database.md](docs/database.md), and [docs/failure-scenarios.md](docs/failure-scenarios.md)
+- [ ] **Phase 8: Dockerization, Production Deployment & CI/CD**
+  - Full multi-service docker-compose production environment
+  - GitHub Actions CI/CD pipeline
+  - Health checks, monitoring, and telemetry

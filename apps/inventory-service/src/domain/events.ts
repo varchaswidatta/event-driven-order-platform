@@ -31,3 +31,34 @@ export interface OrderCreatedPayload {
 }
 
 export type OrderCreatedEvent = EventEnvelope<OrderCreatedPayload>;
+
+// ─── Phase 7: Inventory Result Events ──────────────────────────────────────
+
+/**
+ * Line item included in inventory result event payloads.
+ */
+export interface InventoryEventItemPayload {
+  productId: string;
+  quantity: number;
+}
+
+/**
+ * Business payload emitted when stock was successfully reserved for an order.
+ */
+export interface InventoryReservedPayload {
+  orderId: string;
+  reservationId: string;
+  items: InventoryEventItemPayload[];
+}
+
+/**
+ * Business payload emitted when stock reservation failed for an order.
+ */
+export interface InventoryReservationFailedPayload {
+  orderId: string;
+  reason: string;
+  items: InventoryEventItemPayload[];
+}
+
+export type InventoryReservedEvent = EventEnvelope<InventoryReservedPayload>;
+export type InventoryReservationFailedEvent = EventEnvelope<InventoryReservationFailedPayload>;

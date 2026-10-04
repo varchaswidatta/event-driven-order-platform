@@ -145,14 +145,14 @@ The schema for `inventory_db` is owned by the Inventory Service and managed via 
 
 ### 1. `inventory_reservations` Table
 
-Tracks reservations initiated in response to `OrderCreated` events.
+Tracks reservations initiated in response to `OrderCreated` events and their subsequent stock allocation state.
 
 ```sql
 CREATE TABLE IF NOT EXISTS inventory_reservations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   order_id UUID NOT NULL UNIQUE,
   status VARCHAR(50) NOT NULL DEFAULT 'PENDING' CHECK (
-    status IN ('PENDING')
+    status IN ('PENDING', 'RESERVED', 'FAILED')
   ),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -162,7 +162,7 @@ CREATE TABLE IF NOT EXISTS inventory_reservations (
 #### Key Constraints:
 
 - `order_id UNIQUE`: Enforces consumer idempotency. Prevents duplicate reservation rows when duplicate `OrderCreated` events are delivered by Kafka.
-- `status`: Enforces initial state `PENDING` in Phase 5.
+- `status`: Enforces valid states (`PENDING`, `RESERVED`, `FAILED`). Transitioned via `002_create_outbox_events.sql` in Phase 7.
 - `created_at` / `updated_at`: `TIMESTAMPTZ` for timezone-safe auditability.
 
 ### 2. `inventory_reservation_items` Table
@@ -187,7 +187,48 @@ CREATE INDEX IF NOT EXISTS idx_reservation_items_reservation_id ON inventory_res
 - `FOREIGN KEY ... ON DELETE CASCADE`: Deleting a reservation cleanly cascades to its line items.
 - `idx_reservation_items_reservation_id`: Speeds up joins and queries by parent reservation.
 
----
+### 3. `outbox_events` Table (Phase 7)
+
+Stores inventory domain events (`InventoryReserved`, `InventoryReservationFailed`) within the same database transaction as the reservation status update (Transactional Outbox Pattern).
+
+```sql
+CREATE TABLE IF NOT EXISTS outbox_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  aggregate_type VARCHAR(64) NOT NULL,
+  aggregate_id UUID NOT NULL,
+  event_type VARCHAR(128) NOT NULL,
+  event_version INTEGER NOT NULL DEFAULT 1,
+  payload JSONB NOT NULL,
+  correlation_id UUID NOT NULL DEFAULT gen_random_uuid(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  published_at TIMESTAMPTZ NULL,
+  retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_events_unpublished
+  ON outbox_events (created_at ASC)
+  WHERE published_at IS NULL;
+```
+
+#### Key Constraints & Indexing:
+
+- `id`: Primary key matching domain `eventId`.
+- `aggregate_id`: Foreign aggregate reference (points to `inventory_reservations.order_id`).
+- `published_at`: Stays `NULL` until acknowledged by Kafka topic `inventory.events`.
+- `idx_outbox_events_unpublished`: Partial index over unpublished events (`WHERE published_at IS NULL`) enabling efficient polling.
+
+#### Transactional Atomicity:
+
+When Stock Service returns the reservation outcome, Inventory Service performs:
+
+```text
+BEGIN;
+  UPDATE inventory_reservations SET status = $1, updated_at = NOW() WHERE order_id = $2;
+  INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload, correlation_id) VALUES (...);
+COMMIT;
+```
+
+If anything fails, neither the status nor the outbox event commits, preventing dual-write inconsistencies.
 
 ## Stock Database Schema (`stock_db`)
 

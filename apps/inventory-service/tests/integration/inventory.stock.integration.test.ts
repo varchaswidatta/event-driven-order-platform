@@ -162,7 +162,9 @@ describe('Inventory -> Stock Service Integration Tests (Kafka -> Inventory -> gR
 
     expect(inventoryReservation).not.toBeNull();
     expect(inventoryReservation!.orderId).toBe(orderId);
-    expect(inventoryReservation!.status).toBe(RESERVATION_STATUS.PENDING);
+    expect([RESERVATION_STATUS.PENDING, RESERVATION_STATUS.RESERVED]).toContain(
+      inventoryReservation!.status,
+    );
 
     // Wait until stock_db reflects the gRPC reservation
     let stockReservation = null;

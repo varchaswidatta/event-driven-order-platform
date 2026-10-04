@@ -2,6 +2,11 @@ import { Pool } from 'pg';
 import { Reservation, ReservationItem, CreateReservationInput } from '../domain/reservation.js';
 import { ReservationStatus, RESERVATION_STATUS } from '../domain/reservation-status.js';
 import { DatabaseOperationError } from '../errors/inventory.errors.js';
+import {
+  InsertOutboxEventInput,
+  IOutboxRepository,
+  InventoryOutboxRepository,
+} from './outbox.repository.js';
 
 export interface ReservationResult {
   reservation: Reservation;
@@ -12,10 +17,22 @@ export interface IInventoryRepository {
   createReservation(data: CreateReservationInput): Promise<ReservationResult>;
   findReservationByOrderId(orderId: string): Promise<Reservation | null>;
   findReservationById(id: string): Promise<Reservation | null>;
+  updateReservationStatus(
+    orderId: string,
+    status: ReservationStatus,
+    outboxEvent: InsertOutboxEventInput,
+  ): Promise<Reservation>;
 }
 
 export class InventoryRepository implements IInventoryRepository {
-  constructor(private readonly pool: Pool) {}
+  private readonly outboxRepository: IOutboxRepository;
+
+  constructor(
+    private readonly pool: Pool,
+    outboxRepository?: IOutboxRepository,
+  ) {
+    this.outboxRepository = outboxRepository ?? new InventoryOutboxRepository(pool);
+  }
 
   /**
    * Atomically creates a reservation and its items in a single PostgreSQL transaction.
@@ -264,5 +281,75 @@ export class InventoryRepository implements IInventoryRepository {
         createdAt: r.created_at,
       }),
     );
+  }
+
+  /**
+   * Atomically updates a reservation's status and inserts an outbox event
+   * within a single PostgreSQL transaction, ensuring the outbox event
+   * and the status change are never out of sync.
+   */
+  async updateReservationStatus(
+    orderId: string,
+    status: ReservationStatus,
+    outboxEvent: InsertOutboxEventInput,
+  ): Promise<Reservation> {
+    const client = await this.pool.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      // 1. Update reservation status
+      const updateSql = `
+        UPDATE inventory_reservations
+        SET status = $2, updated_at = NOW()
+        WHERE order_id = $1
+        RETURNING id, order_id, status, created_at, updated_at;
+      `;
+
+      const updateResult = await client.query<{
+        id: string;
+        order_id: string;
+        status: string;
+        created_at: Date;
+        updated_at: Date;
+      }>(updateSql, [orderId, status]);
+
+      const reservationRow = updateResult.rows[0];
+      if (!reservationRow) {
+        throw new DatabaseOperationError(`No reservation found for order_id ${orderId} to update`);
+      }
+
+      // 2. Insert outbox event within the same transaction
+      if (!this.outboxRepository) {
+        throw new DatabaseOperationError('Outbox repository not configured for status update');
+      }
+
+      await this.outboxRepository.insertEvent(outboxEvent, client);
+
+      // 3. Query reservation items
+      const items = await this.queryReservationItems(reservationRow.id, client);
+
+      await client.query('COMMIT');
+
+      return {
+        id: reservationRow.id,
+        orderId: reservationRow.order_id,
+        status: reservationRow.status as ReservationStatus,
+        items,
+        createdAt: reservationRow.created_at,
+        updatedAt: reservationRow.updated_at,
+      };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {
+        // Rollback failure handler
+      });
+      if (error instanceof DatabaseOperationError) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : 'Unknown database error';
+      throw new DatabaseOperationError(`Failed to update reservation status: ${message}`);
+    } finally {
+      client.release();
+    }
   }
 }
