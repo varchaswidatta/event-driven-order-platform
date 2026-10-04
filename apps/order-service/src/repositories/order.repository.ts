@@ -578,7 +578,11 @@ export class OrderRepository implements IOrderRepository {
       await client.query('ROLLBACK').catch(() => {
         // Rollback failure handler
       });
-      if (error instanceof DatabaseOperationError) {
+      if (
+        error instanceof DatabaseOperationError ||
+        error instanceof OrderNotFoundError ||
+        (error instanceof Error && error.name === 'OrderNotFoundError')
+      ) {
         throw error;
       }
       const message = error instanceof Error ? error.message : 'Unknown database error';

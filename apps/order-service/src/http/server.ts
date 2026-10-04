@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { env } from '../config/env.js';
 import { getDatabasePool, closeDatabasePool } from '../db/client.js';
+import { runMigrations } from '../db/migrate.js';
 import { OrderRepository } from '../repositories/order.repository.js';
 import { OutboxRepository } from '../repositories/outbox.repository.js';
 import { OrderService } from '../services/order.service.js';
@@ -38,6 +39,9 @@ export async function startHttpServer(
 
   const port = options.port!;
   const pool = getDatabasePool();
+  await runMigrations(pool);
+  console.log('[OrderService] Database migrations verified/applied');
+
   const outboxRepository = new OutboxRepository(pool);
   const repository = new OrderRepository(pool, outboxRepository);
   const orderService = new OrderService(repository);
@@ -56,6 +60,7 @@ export async function startHttpServer(
       console.log('[OrderService] OutboxPublisher started successfully');
     } catch (err) {
       console.error('[OrderService] Failed to start OutboxPublisher:', err);
+      throw err;
     }
   }
 
@@ -70,6 +75,7 @@ export async function startHttpServer(
       console.log('[OrderService] InventoryEventsConsumer started successfully');
     } catch (err) {
       console.error('[OrderService] Failed to start InventoryEventsConsumer:', err);
+      throw err;
     }
   }
 

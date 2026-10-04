@@ -1,214 +1,515 @@
 # Event-Driven Order Fulfillment Platform
 
-A robust, enterprise-grade event-driven microservice platform built with **TypeScript**, demonstrating production patterns with **Apache Kafka**, **PostgreSQL**, **gRPC**, **GraphQL**, **Docker**, and **CI/CD**.
+A production-grade, event-driven distributed microservices platform built with **TypeScript**, demonstrating core distributed systems patterns including **Apache Kafka**, **PostgreSQL**, **gRPC**, **GraphQL**, and container orchestration with **Docker Compose**.
 
-This project serves as an end-to-end reference implementation for resilient, distributed order processing and inventory management under high concurrency and failure-prone distributed environments.
+This repository serves as a reference implementation for asynchronous order processing, resilient transactional outbox messaging, deadlock-free inventory reservation, and guaranteed eventual consistency.
 
 ---
 
-## Architecture Flow
+## 1. Project Purpose
 
-The complete end-to-end asynchronous order fulfillment workflow:
+The platform implements an asynchronous, decoupled e-commerce fulfillment workflow. When a client places an order, the system accepts it immediately in a `PENDING` state and confirms or fails the order asynchronously as stock reservations are coordinated across microservice boundaries. The platform solves classic distributed systems challenges including dual-write consistency, network partition recovery, at-least-once message delivery, and concurrency deadlocks.
+
+---
+
+## 2. System Architecture
 
 ```text
-Client
+                               +-----------------------------+
+                               |     Client Application      |
+                               +-----------------------------+
+                                              |
+                                              | GraphQL POST
+                                              v
+                              +-------------------------------+
+                              |      GraphQL API Gateway      |
+                              |         (:4000/graphql)       |
+                              +-------------------------------+
+                                              |
+                                              | HTTP POST /orders
+                                              v
++------------------+          +-------------------------------+          +------------------+
+|                  |  ACID Tx |         Order Service         | Consume  |                  |
+|     order_db     |<-------->|            (:4001)            |<---------|  Kafka Broker    |
+|                  |          +-------------------------------+          |   (PLAINTEXT)    |
++------------------+                          |                          |                  |
+                                              | Poll Outbox & Produce    |  Topics:         |
+                                              +------------------------->|  - order.events  |
+                                                                         |  - inventory.    |
+                                                                         |    events        |
+                                                                         |                  |
++------------------+          +-------------------------------+          |                  |
+|                  |  ACID Tx |       Inventory Service       | Consume  |                  |
+|   inventory_db   |<-------->|       (Kafka & Outbox)        |<---------|                  |
+|                  |          +-------------------------------+          +------------------+
++------------------+                          |                                    ^
+                                              | Synchronous gRPC                   |
+                                              | ReserveStock()                     | Poll Outbox
+                                              v                                    | & Produce
++------------------+          +-------------------------------+                    |
+|                  |  ACID Tx |         Stock Service         |                    |
+|     stock_db     |<-------->|           (:50051)            |--------------------+
+|                  |          +-------------------------------+
++------------------+
+```
+
+---
+
+## 3. Services
+
+The platform consists of four autonomous services:
+
+1. **API Gateway (`apps/api-gateway`)**
+   - Public client entry point hosting Apollo Server GraphQL on port `4000`.
+   - Exposes strongly-typed GraphQL mutations (`createOrder`) and queries (`order`, `orders`).
+   - Delegates commands to the Order Service via internal HTTP requests (`http://order-service:4001`).
+   - Maintains zero direct database coupling.
+
+2. **Order Service (`apps/order-service`)**
+   - Manages order lifecycles and status transitions.
+   - Internal Fastify HTTP server on port `4001`.
+   - Atomically persists orders and outbox events in `order_db`.
+   - Operates a background `OutboxPublisher` to produce `OrderCreated` events to Kafka.
+   - Operates a background `InventoryEventsConsumer` to consume `inventory.events` and finalize order states.
+
+3. **Inventory Service (`apps/inventory-service`)**
+   - Event-driven orchestrator reacting to `order.events`.
+   - Manages reservation records in `inventory_db`.
+   - Calls the Stock Service over synchronous gRPC to verify and reserve stock.
+   - Atomically records reservation state and outbox events (`InventoryReserved` or `InventoryReservationFailed`).
+   - Operates a background `InventoryOutboxPublisher` to produce results to `inventory.events`.
+
+4. **Stock Service (`apps/stock-service`)**
+   - High-performance inventory tracking service hosting a gRPC server on port `50051`.
+   - Implements `ReserveStock` RPC defined in `proto/stock.proto`.
+   - Executes atomic, deadlock-free row-level locking (`SELECT ... FOR UPDATE`) in `stock_db`.
+   - Enforces all-or-nothing stock reservation semantics.
+   - Declares `ReleaseStock` in its protobuf definition (intentionally `UNIMPLEMENTED` by specification).
+
+---
+
+## 4. Technology Stack
+
+- **Runtime & Language**: Node.js (>= 20.0.0 LTS), TypeScript 5.9 (Strict mode)
+- **Monorepo & Package Management**: pnpm workspaces
+- **Messaging & Event Streaming**: Apache Kafka 3.8 (KRaft mode, KafkaJS client)
+- **Database**: PostgreSQL 17 (raw SQL with `pg` client driver, zero ORM abstraction)
+- **Edge Layer**: Apollo Server 4 / GraphQL 16
+- **Internal HTTP**: Fastify 5
+- **RPC Framework**: gRPC (`@grpc/grpc-js`, `@grpc/proto-loader`, Protocol Buffers v3)
+- **Validation**: Zod
+- **Testing**: Vitest
+- **Containerization**: Docker, Docker Compose (BuildKit multi-stage builds)
+- **CI/CD**: GitLab CI (`.gitlab-ci.yml`)
+
+---
+
+## 5. Event Flow & Lifecycle
+
+The distributed fulfillment lifecycle follows an asynchronous event-driven workflow:
+
+```text
+Customer
   ↓
 GraphQL API Gateway
   ↓ HTTP
 Order Service
-  ↓ ACID
-PostgreSQL (order_db) + Transactional Outbox
+  ↓ PostgreSQL transaction (orders + order_items + transactional outbox)
+Outbox Publisher
   ↓
-Kafka (order.events)
+Kafka: order.events
   ↓
 Inventory Service
-  ↓ gRPC
-Stock Service
-  ↓ ACID
-PostgreSQL (stock_db)
+  ↓ gRPC (synchronous ReserveStock)
+Stock Service (stock_db row locks)
   ↓
-Inventory Service (Outbox)
+Inventory result + transactional outbox
   ↓
-Kafka (inventory.events)
+Kafka: inventory.events
   ↓
-Order Service (Consumer)
-  ↓
-PostgreSQL (order_db: CONFIRMED / INVENTORY_FAILED)
+Order Service
+  ↓ PostgreSQL update
+Final Order Status (CONFIRMED / INVENTORY_FAILED)
 ```
 
-### Architectural Highlights
+Core order lifecycle states:
 
-- **GraphQL API Gateway**: Single point of ingress for clients, providing typed queries and mutations without coupling to backend message brokers or storage.
-- **Order Service**: Manages order creation, lifecycle state transitions, and guarantees atomic event publishing via the **Transactional Outbox Pattern**.
-- **Apache Kafka**: High-throughput distributed streaming backbone operating `order.events` and `inventory.events` topics with deterministic partition affinity on `orderId`.
-- **Inventory Service**: Event-driven consumer processing `order.events`, orchestrating stock reservations via gRPC, and publishing results to `inventory.events` via its own transactional outbox.
-- **Stock Service**: High-performance internal service handling atomic stock reservations with deadlock-free row-level locking via **gRPC**.
-- **PostgreSQL**: Dedicated database-per-service isolation (`order_db`, `inventory_db`, `stock_db`).
+- `PENDING`: Order recorded, awaiting inventory verification.
+- `INVENTORY_PROCESSING`: Downstream inventory allocation in progress.
+- `CONFIRMED`: Stock successfully reserved; order confirmed.
+- `INVENTORY_FAILED`: Insufficient stock or invalid product; order failed.
 
 ---
 
-## Monorepo Structure
+## 6. Kafka Topics & Partitioning
+
+The platform operates two primary Kafka topics:
+
+1. **`order.events`**
+   - **Events**: `OrderCreated`
+   - **Partitions**: 3 partitions (enables parallel processing across consumer instances)
+   - **Message Key**: `orderId` (UUID)
+   - **Guarantee**: Total message ordering per order via hash-based partition routing.
+
+2. **`inventory.events`**
+   - **Events**: `InventoryReserved`, `InventoryReservationFailed`
+   - **Partitions**: 3 partitions
+   - **Message Key**: `orderId` (UUID)
+   - **Guarantee**: Preserves correlation with original order stream.
+
+---
+
+## 7. gRPC Communication
+
+Internal communication between **Inventory Service** and **Stock Service** uses synchronous gRPC:
+
+- **Contract Definition**: `proto/stock.proto`
+- **RPCs**:
+  - `rpc ReserveStock(ReserveStockRequest) returns (ReserveStockResponse);`
+  - `rpc ReleaseStock(ReleaseStockRequest) returns (ReleaseStockResponse);` _(explicitly UNIMPLEMENTED)_
+- **Resilience**: Configurable deadline timeouts (default 5000ms), fail-fast error sanitization, and structured failure reasons (`INSUFFICIENT_STOCK`, `PRODUCT_NOT_FOUND`).
+
+---
+
+## 8. Transactional Outbox Pattern
+
+To eliminate dual-write inconsistency between PostgreSQL and Kafka:
+
+1. Business data (`orders` or `inventory_reservations`) and domain events (`outbox_events`) are inserted within the **same local ACID database transaction**.
+2. If the transaction rolls back, no message is ever published.
+3. If the transaction commits, the event is guaranteed to exist on durable disk.
+4. An asynchronous polling worker (`OutboxPublisher`) periodically scans for unpublished events (`WHERE published_at IS NULL`), publishes them to Kafka with retry tracking, and marks `published_at = NOW()`.
+5. This guarantees **at-least-once event delivery** to the Kafka cluster without distributed two-phase commit transactions.
+
+---
+
+## 9. Idempotency & Concurrency
+
+Distributed networks inevitably deliver duplicate messages. The system implements end-to-end idempotency:
+
+- **Inventory Service**: `inventory_reservations` enforces `UNIQUE (order_id)`. Re-delivered `OrderCreated` events are detected, skipped, and acknowledged without duplicate reservations.
+- **Stock Service**: `stock_reservations` enforces `UNIQUE (order_id)`. Re-delivered reservation requests return the existing reservation ID without deducting stock again.
+- **Order Service**: `OrderRepository.updateOrderStatus` checks current order status and ignores duplicate `InventoryReserved` or `InventoryReservationFailed` events.
+- **Deadlock Avoidance**: Stock Service sorts product IDs lexicographically before issuing `SELECT ... FOR UPDATE` row locks, preventing circular wait conditions during concurrent multi-item reservations.
+
+---
+
+## 10. Database Ownership
+
+The architecture enforces strict **Database-per-Service** isolation:
+
+- `order_db`: Owned exclusively by Order Service.
+- `inventory_db`: Owned exclusively by Inventory Service.
+- `stock_db`: Owned exclusively by Stock Service.
+
+No service connects to or queries another service's database. All cross-boundary communication occurs exclusively via Kafka events or gRPC.
+
+---
+
+## 11. Repository Structure
 
 ```text
 event-driven-order-platform/
 ├── apps/
-│   ├── api-gateway/            # GraphQL API gateway (client ingress)
-│   ├── order-service/          # Order management & outbox publisher
-│   ├── inventory-service/      # Kafka consumer & inventory orchestration
+│   ├── api-gateway/            # GraphQL Apollo Server Gateway
+│   ├── order-service/          # Order service, HTTP server & outbox publisher
+│   ├── inventory-service/      # Inventory consumer, gRPC client & outbox publisher
 │   └── stock-service/          # gRPC stock reservation service
-├── proto/                      # Protocol Buffer definitions for gRPC contracts
-├── infrastructure/             # Infrastructure definitions & configs
-│   ├── postgres/               # PostgreSQL initialization and schema configs
-│   └── kafka/                  # Kafka broker configs, topics, and scripts
-├── docs/                       # Architectural & design documentation
+├── proto/
+│   └── stock.proto             # Protocol Buffers service definition
+├── infrastructure/
+│   ├── postgres/               # PostgreSQL multi-database init scripts
+│   └── kafka/                  # Kafka cluster & topic initialization
+├── docs/                       # Comprehensive architecture & design docs
 │   ├── architecture.md         # System topology and domain boundaries
-│   ├── database.md             # Database-per-service schemas & outbox
-│   ├── kafka.md                # Topic topologies and event contracts
-│   ├── grpc.md                 # gRPC service definitions & resilience
-│   ├── graphql.md              # GraphQL schema and query/mutation contracts
-│   └── failure-scenarios.md    # Resilience, DLQ, and fault-tolerance patterns
-├── scripts/                    # Automation and utility scripts
-├── .env.example                # Safe template for environment variables
-├── .gitignore                  # Git ignore rules for node, dist, and secrets
-├── .prettierrc                 # Code formatting configuration
-├── .prettierignore             # Prettier ignore patterns
-├── package.json                # Root monorepo configuration
-├── pnpm-workspace.yaml         # pnpm workspace definition
-├── tsconfig.json               # Shared strict TypeScript base configuration
-└── README.md                   # Project overview and documentation
+│   ├── database.md             # Database schemas, migrations & outbox
+│   ├── kafka.md                # Topic topologies, event contracts & outbox
+│   ├── grpc.md                 # gRPC service definition & resilience
+│   ├── graphql.md              # GraphQL schema and operation contracts
+│   └── failure-scenarios.md    # Fault tolerance and error classifications
+├── docker-compose.yml          # Full platform Docker Compose orchestration
+├── .gitlab-ci.yml              # CI/CD validation pipeline
+├── .env.example                # Safe environment variable template
+├── package.json                # Root monorepo configuration & package scripts
+├── pnpm-workspace.yaml         # pnpm workspace configuration
+└── README.md                   # Project documentation
 ```
 
 ---
 
-## Getting Started
+## 12. Local Prerequisites
 
-### Prerequisites
+- **Docker Desktop** (or Docker Engine 24+ and Docker Compose v2)
+- **Node.js** (>= 20.0.0 LTS) _(for running local tests or scripts outside Docker)_
+- **pnpm** (>= 12.0.0) _(recommended for local development)_
 
-- **Node.js**: `>= 20.0.0`
-- **pnpm**: `>= 9.0.0`
-- **Git**
+---
 
-### Installation
+## 13. Environment Configuration
 
-Clone the repository and install workspace dependencies:
-
-```bash
-# Clone the repository
-git clone <repository-url>
-cd event-driven-order-platform
-
-# Install dependencies across all workspace packages
-pnpm install
-```
-
-### Environment Configuration
-
-Copy the example environment configuration:
+Copy the example environment file:
 
 ```bash
 cp .env.example .env
 ```
 
-> [!WARNING]
-> `.env` contains local development values and must never be committed to source control.
+The system is pre-configured with sensible defaults:
+
+- **Host execution**: connects to `localhost:5432`, `localhost:9092`.
+- **Docker Compose execution**: services automatically use Compose network hostnames (`postgres`, `kafka`, `order-service`, `stock-service`).
 
 ---
 
-## Available Scripts
+## 14. How to Start the System (Docker Compose)
 
-From the repository root, you can execute commands across all packages using pnpm workspaces:
+Launch the complete containerized stack with a single command:
 
-| Command                      | Description                                          |
-| :--------------------------- | :--------------------------------------------------- |
-| `pnpm run build`             | Builds TypeScript across all workspace packages      |
-| `pnpm run typecheck`         | Runs TypeScript type checking without emitting files |
-| `pnpm run test`              | Runs tests across workspace packages                 |
-| `pnpm run lint`              | Runs ESLint across the codebase                      |
-| `pnpm run lint:fix`          | Runs ESLint and automatically applies fixes          |
-| `pnpm run format`            | Formats all files using Prettier                     |
-| `pnpm run format:check`      | Verifies code formatting compliance                  |
-| `pnpm run migrate:order`     | Runs Order Service database migrations               |
-| `pnpm run migrate:inventory` | Runs Inventory Service database migrations           |
-| `pnpm run migrate:stock`     | Runs Stock Service database migrations               |
-| `pnpm run seed:stock`        | Seeds deterministic sample products & stock          |
+```bash
+docker compose up --build -d
+```
+
+Or using the pnpm convenience script:
+
+```bash
+pnpm run docker:up
+```
+
+### Startup Verification
+
+Inspect running containers:
+
+```bash
+docker compose ps
+```
+
+All 6 services will be running and healthy:
+
+- `event-platform-postgres` (PostgreSQL on `:5432` with `order_db`, `inventory_db`, `stock_db`)
+- `event-platform-kafka` (Kafka broker on `:9092` internal, `:29092` external)
+- `event-platform-kafka-init` (Auto-creates `order.events` and `inventory.events` topics)
+- `event-platform-stock-service` (gRPC on `:50051`)
+- `event-platform-inventory-service` (Kafka consumer & outbox worker)
+- `event-platform-order-service` (HTTP on `:4001`)
+- `event-platform-api-gateway` (GraphQL on `:4000`)
+
+To view real-time logs across all services:
+
+```bash
+docker compose logs -f
+```
+
+To stop the system:
+
+```bash
+docker compose down
+```
 
 ---
 
-## Implementation Roadmap
+## 15. How to Run Tests
 
-- [x] **Phase 0: Foundation & Monorepo Setup** (Complete)
-  - pnpm workspace initialization
-  - Base TypeScript, ESLint, and Prettier configurations
-  - Directory skeleton and placeholder services
-  - Architecture documentation outlines
-- [x] **Phase 1: Order Service & PostgreSQL Persistence** (Complete)
-  - Raw PostgreSQL persistence via `pg` (no ORM)
-  - SQL migration runner and `001_create_orders.sql`
-  - Atomic transaction handling (`orders` + `order_items`)
-  - Domain models and clean repository/service layering
-  - Input validation via Zod
-  - Exact decimal-safe monetary arithmetic via `BigInt`
-  - Unit tests and real PostgreSQL integration tests
-- [x] **Phase 2: GraphQL API Gateway & Order Service Integration** (Complete)
-  - Apollo Server GraphQL API Gateway on `http://localhost:4000/graphql`
-  - Internal Fastify HTTP server for Order Service on `http://localhost:4001`
-  - Decoupled `OrderServiceClient` communicating via HTTP/JSON (zero direct database coupling)
-  - Custom `DateTime` and `Decimal` GraphQL scalars
-  - Typed `createOrder` mutation, `order(id)` and `orders(customerId)` queries
-  - End-to-end integration tests (Client → GraphQL Gateway → Order Service HTTP → PostgreSQL)
-- [x] **Phase 3: Transactional Outbox Pattern** (Complete)
-  - `outbox_events` table and partial index `idx_outbox_events_unpublished` (`002_create_outbox_events.sql`)
-  - Single ACID PostgreSQL transaction: `orders` + `order_items` + `outbox_events` (`OrderCreated`)
-  - Atomic rollback guarantee (verified with real PostgreSQL integration tests)
-  - Reusable application `EventEnvelope` and `OrderCreated` event payload
-  - Safe monetary boundary (inventory event payload strictly omits price/amount)
-  - UUID correlation ID generation at Order Service boundary
-  - Dedicated `OutboxRepository` for atomic insert, FIFO retrieval, mark published, and retry count
-  - Full documentation in [docs/outbox.md](docs/outbox.md)
-- [x] **Phase 4: Kafka Integration & Outbox Publisher** (Complete)
-  - Apache Kafka in KRaft mode via Docker Compose (`docker-compose.yml`)
-  - Topic `order.events` with key-based partitioning on `orderId`
-  - In-process `OutboxPublisher` in Order Service with at-least-once publishing semantics
-  - Dedicated `KafkaOrderProducer` abstraction using `kafkajs`
-  - Automated retry tracking (`retry_count` increment on broker failure)
-  - Unit tests covering all publisher states and edge cases
-  - Live PostgreSQL + Kafka integration tests and fault tolerance recovery tests
-  - Complete End-to-End test (GraphQL API Gateway → Order Service HTTP → PostgreSQL ACID Transaction → Outbox Publisher → Kafka `order.events`)
-  - Full architectural documentation in [docs/kafka.md](docs/kafka.md)
-- [x] **Phase 5: Inventory Service Event Consumption & Reservation** (Complete)
-  - Dedicated PostgreSQL database `inventory_db` with `inventory_reservations` and `inventory_reservation_items` tables (`001_create_inventory_reservations.sql`)
-  - Kafka consumer group `inventory-service` consuming `order.events` with `orderId` key affinity
-  - Strict idempotency via `order_id UNIQUE` constraint and atomic transaction handling
-  - Full domain event validation via Zod (`EventEnvelope` & `OrderCreatedPayload`)
-  - Poison-pill resilience: invalid envelopes and unsupported event types/versions safely logged and skipped; db errors trigger retry
-  - Real PostgreSQL and Kafka consumer integration tests
-  - End-to-end flow test (GraphQL Gateway → Order Service → PostgreSQL → Outbox Publisher → Kafka → Inventory Service → `inventory_db`)
-  - Full architectural documentation in [docs/inventory.md](docs/inventory.md)
-- [x] **Phase 6: Stock Service & gRPC Reservation** (Complete)
-  - Dedicated PostgreSQL database `stock_db` with `products`, `stock`, `stock_reservations`, and `stock_reservation_items` tables
-  - gRPC server implementing `StockService.ReserveStock` and contract placeholder `ReleaseStock` using Protocol Buffers (`proto/stock.proto`)
-  - Concurrency-safe atomic reservation transactions via PostgreSQL row-level locks (`SELECT ... FOR UPDATE`) with lexicographical product ID sorting to prevent deadlocks
-  - Strict all-or-nothing stock reservation semantics (no partial allocations)
-  - Idempotent gRPC reservation handling via `order_id UNIQUE` constraint on `stock_reservations`
-  - Decoupled `StockServiceClient` in Inventory Service with configurable request deadlines, timeouts, and error sanitization
-  - Clean separation of business failures (`INSUFFICIENT_STOCK`) from infrastructure failures (`UNAVAILABLE`, `DEADLINE_EXCEEDED`) ensuring reliable Kafka consumer retry semantics
-  - Unit tests, concurrency tests, gRPC integration tests, and full Phase 6 End-to-End flow tests (GraphQL → Order Service → Outbox → Kafka → Inventory Service → gRPC → Stock Service → `stock_db`)
-  - Full architectural documentation in [docs/stock.md](docs/stock.md) and [docs/grpc.md](docs/grpc.md)
-- [x] **Phase 7: Complete Asynchronous Order Fulfillment Workflow** (Complete)
-  - Dedicated outbox table `outbox_events` and schema migration in `inventory_db` (`002_create_outbox_events.sql`)
-  - Extended reservation status constraint (`PENDING`, `RESERVED`, `FAILED`)
-  - Inventory Service Transactional Outbox: atomic reservation status update and outbox event creation (`InventoryReserved` or `InventoryReservationFailed`)
-  - Kafka topic `inventory.events` with 3 partitions and message key `orderId`
-  - In-process `InventoryOutboxPublisher` dispatching reservation events with retry tracking and at-least-once delivery
-  - Order Service `InventoryEventsConsumer` (consumer group `order-service`) listening to `inventory.events`
-  - Deterministic state machine transitions in `OrderRepository.updateOrderStatus`:
-    - `InventoryReserved` → `CONFIRMED`
-    - `InventoryReservationFailed` → `INVENTORY_FAILED`
-  - Consumer idempotency across both services: duplicate message replays safely acknowledged without side effects
-  - Non-retryable orphaned event handling (`OrderNotFoundError`) preventing partition stalls
-  - Comprehensive unit tests, integration tests, and full End-to-End flow tests covering all scenarios (success, insufficient stock, transient infrastructure failure, duplicate delivery)
-  - Full architectural documentation in [docs/kafka.md](docs/kafka.md), [docs/database.md](docs/database.md), and [docs/failure-scenarios.md](docs/failure-scenarios.md)
-- [ ] **Phase 8: Dockerization, Production Deployment & CI/CD**
-  - Full multi-service docker-compose production environment
-  - GitHub Actions CI/CD pipeline
-  - Health checks, monitoring, and telemetry
+### Unit & Integration Tests (Local)
+
+Ensure PostgreSQL and Kafka are running via Compose:
+
+```bash
+docker compose up -d postgres kafka
+```
+
+Execute the full automated test suite (134 tests):
+
+```bash
+pnpm test
+```
+
+Execute static quality checks:
+
+```bash
+pnpm format:check   # Prettier verification
+pnpm lint           # ESLint verification
+pnpm typecheck      # TypeScript compiler validation
+pnpm build          # Workspace build verification
+```
+
+---
+
+## 16. Accessing the GraphQL API
+
+The GraphQL API Gateway is accessible at:
+
+- **URL**: `http://localhost:4000/graphql`
+- **Method**: `POST`
+- **Content-Type**: `application/json`
+
+---
+
+## 17. Example: Creating an Order
+
+Send a `POST` request to `http://localhost:4000/graphql`:
+
+```graphql
+mutation CreateOrder {
+  createOrder(
+    input: {
+      customerId: "a1111111-1111-4111-8111-111111111111"
+      items: [{ productId: "88888888-aaaa-4bbb-8ccc-000000000001", quantity: 2, unitPrice: 1500 }]
+    }
+  ) {
+    id
+    customerId
+    status
+    totalAmount
+    currency
+    items {
+      productId
+      quantity
+      unitPrice
+    }
+  }
+}
+```
+
+### Initial Response (Immediate)
+
+The mutation returns immediately with status `PENDING`:
+
+```json
+{
+  "data": {
+    "createOrder": {
+      "id": "e7a8a1cd-5ea5-4d0d-bb42-b319b9305e57",
+      "customerId": "a1111111-1111-4111-8111-111111111111",
+      "status": "PENDING",
+      "totalAmount": "3000.00",
+      "currency": "USD",
+      "items": [
+        {
+          "productId": "88888888-aaaa-4bbb-8ccc-000000000001",
+          "quantity": 2,
+          "unitPrice": "1500.00"
+        }
+      ]
+    }
+  }
+}
+```
+
+---
+
+## 18. Observing Eventual Consistency
+
+Within 1-2 seconds, the background outbox publishers and Kafka consumers coordinate stock reservation and update the order.
+
+Query the order by ID:
+
+```graphql
+query GetOrder {
+  order(id: "e7a8a1cd-5ea5-4d0d-bb42-b319b9305e57") {
+    id
+    customerId
+    status
+    totalAmount
+    items {
+      productId
+      quantity
+    }
+  }
+}
+```
+
+### Final Response (Eventual Consistency Achieved)
+
+```json
+{
+  "data": {
+    "order": {
+      "id": "e7a8a1cd-5ea5-4d0d-bb42-b319b9305e57",
+      "customerId": "a1111111-1111-4111-8111-111111111111",
+      "status": "CONFIRMED",
+      "totalAmount": "3000.00",
+      "items": [
+        {
+          "productId": "88888888-aaaa-4bbb-8ccc-000000000001",
+          "quantity": 2
+        }
+      ]
+    }
+  }
+}
+```
+
+---
+
+## 19. Business Failure Scenario (Insufficient Stock)
+
+Request an order with a quantity exceeding available stock (e.g. quantity `999999`):
+
+```graphql
+mutation CreateOrderExcessStock {
+  createOrder(
+    input: {
+      customerId: "b2222222-2222-4222-8222-222222222222"
+      items: [
+        { productId: "88888888-aaaa-4bbb-8ccc-000000000001", quantity: 999999, unitPrice: 1500 }
+      ]
+    }
+  ) {
+    id
+    status
+  }
+}
+```
+
+### Resulting Workflow
+
+1. Initial response returns `PENDING`.
+2. Inventory Service attempts gRPC reservation with Stock Service.
+3. Stock Service detects insufficient stock, leaves inventory unchanged, and returns `{ success: false, failure_reason: "INSUFFICIENT_STOCK" }`.
+4. Inventory Service marks reservation `FAILED` and publishes `InventoryReservationFailed` to `inventory.events`.
+5. Order Service consumes event and transitions order status to `INVENTORY_FAILED`.
+6. Subsequent query `order(id)` returns:
+   ```json
+   {
+     "data": {
+       "order": {
+         "id": "0a0e5f19-19c5-431f-abe5-71ebc35b7230",
+         "status": "INVENTORY_FAILED"
+       }
+     }
+   }
+   ```
+
+---
+
+## 20. Seed Data for Testing
+
+On startup, `stock_db` is automatically seeded with default products:
+
+| Product ID                             | Product Name        | Initial Stock |
+| -------------------------------------- | ------------------- | ------------- |
+| `88888888-aaaa-4bbb-8ccc-000000000001` | Wireless Headphones | 50 units      |
+| `88888888-aaaa-4bbb-8ccc-000000000002` | Mechanical Keyboard | 30 units      |
+| `88888888-aaaa-4bbb-8ccc-000000000003` | USB-C Hub           | 100 units     |
+
+---
+
+## 21. CI/CD Pipeline
+
+The project includes a GitLab CI pipeline defined in `.gitlab-ci.yml` structured across four validation stages:
+
+1. **`quality`**: Enforces Prettier code formatting (`pnpm format:check`) and ESLint rules (`pnpm lint`).
+2. **`test`**: Enforces TypeScript compilation (`pnpm typecheck`) and runs unit tests (`pnpm run test -- tests/unit`).
+3. **`build`**: Compiles all TypeScript workspace packages (`pnpm build`).
+4. **`docker`**: Validates Compose configuration (`docker compose config`) and verifies Docker image builds (`docker compose build`).
+
+---
+
+## 22. Architectural Invariants & Non-Goals
+
+To maintain high architectural integrity and clear domain boundaries, the system adheres to strict design boundaries:
+
+- **At-least-once delivery**: The platform embraces at-least-once messaging; all consumers are strictly idempotent.
+- **Synchronous gRPC communication**: Used exclusively for internal, tight-coupling domain dependencies (Inventory ➔ Stock).
+- **Transactional outbox**: Eliminates distributed transactions without requiring two-phase commit.
+- **Eventual consistency**: External clients observe state progression through polling or subsequent queries.
+- **Non-Goals**: Does not implement distributed Saga compensation, distributed caching, Elasticsearch, frontend applications, or Kubernetes.

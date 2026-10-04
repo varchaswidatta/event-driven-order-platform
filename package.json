@@ -18,7 +18,10 @@
     "migrate:order": "pnpm --filter order-service run migrate",
     "migrate:inventory": "pnpm --filter inventory-service run migrate",
     "migrate:stock": "pnpm --filter stock-service run migrate",
-    "seed:stock": "pnpm --filter stock-service run seed"
+    "seed:stock": "pnpm --filter stock-service run seed",
+    "docker:up": "docker compose up --build -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

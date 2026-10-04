@@ -17,20 +17,22 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - event-platform-net
 
   kafka:
     image: apache/kafka:3.8.0
     container_name: event-platform-kafka
     restart: unless-stopped
     ports:
-      - '9092:9092'
+      - '9092:29092'
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
@@ -49,6 +51,143 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - event-platform-net
+
+  kafka-init:
+    image: apache/kafka:3.8.0
+    container_name: event-platform-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: >
+      bash -c "
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic order.events --partitions 3 --replication-factor 1 &&
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic inventory.events --partitions 3 --replication-factor 1 &&
+        echo 'Kafka topics initialized successfully.'
+      "
+    restart: 'no'
+    networks:
+      - event-platform-net
+
+  stock-service:
+    build:
+      context: .
+      dockerfile: apps/stock-service/Dockerfile
+    container_name: event-platform-stock-service
+    restart: unless-stopped
+    ports:
+      - '50051:50051'
+    environment:
+      NODE_ENV: production
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: local_password
+      STOCK_DB_NAME: stock_db
+      STOCK_SERVICE_GRPC_PORT: 50051
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - event-platform-net
+
+  inventory-service:
+    build:
+      context: .
+      dockerfile: apps/inventory-service/Dockerfile
+    container_name: event-platform-inventory-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: local_password
+      INVENTORY_DB_NAME: inventory_db
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_CLIENT_ID: inventory-service
+      KAFKA_GROUP_ID: inventory-service
+      OUTBOX_POLL_INTERVAL_MS: 1000
+      OUTBOX_BATCH_SIZE: 100
+      STOCK_SERVICE_GRPC_HOST: stock-service
+      STOCK_SERVICE_GRPC_PORT: 50051
+      STOCK_SERVICE_TIMEOUT_MS: 5000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      stock-service:
+        condition: service_started
+    networks:
+      - event-platform-net
+
+  order-service:
+    build:
+      context: .
+      dockerfile: apps/order-service/Dockerfile
+    container_name: event-platform-order-service
+    restart: unless-stopped
+    ports:
+      - '4001:4001'
+    environment:
+      NODE_ENV: production
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: local_password
+      ORDER_DB_NAME: order_db
+      ORDER_SERVICE_PORT: 4001
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_CLIENT_ID: order-service
+      KAFKA_GROUP_ID: order-service
+      OUTBOX_POLL_INTERVAL_MS: 1000
+      OUTBOX_BATCH_SIZE: 100
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://localhost:4001/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - event-platform-net
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: apps/api-gateway/Dockerfile
+    container_name: event-platform-api-gateway
+    restart: unless-stopped
+    ports:
+      - '4000:4000'
+    environment:
+      NODE_ENV: production
+      API_GATEWAY_PORT: 4000
+      ORDER_SERVICE_URL: http://order-service:4001
+    depends_on:
+      order-service:
+        condition: service_healthy
+    networks:
+      - event-platform-net
+
+networks:
+  event-platform-net:
+    driver: bridge
 
 volumes:
   postgres_data:

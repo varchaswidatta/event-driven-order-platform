@@ -1,0 +1,58 @@
+stages:
+  - quality
+  - test
+  - build
+  - docker
+
+default:
+  image: node:20-alpine
+  before_script:
+    - npm install -g pnpm@12
+    - pnpm install --frozen-lockfile
+
+cache:
+  key:
+    files:
+      - pnpm-lock.yaml
+  paths:
+    - node_modules/
+    - .pnpm-store/
+
+format:check:
+  stage: quality
+  script:
+    - pnpm format:check
+
+lint:
+  stage: quality
+  script:
+    - pnpm lint
+
+typecheck:
+  stage: test
+  script:
+    - pnpm typecheck
+
+unit:test:
+  stage: test
+  script:
+    - pnpm -r --if-present run test -- tests/unit
+
+build:
+  stage: build
+  script:
+    - pnpm build
+  artifacts:
+    paths:
+      - apps/*/dist/
+    expire_in: 1 hour
+
+docker:validate:
+  stage: docker
+  image: docker:26
+  services:
+    - docker:26-dind
+  before_script: []
+  script:
+    - docker compose config
+    - docker compose build
